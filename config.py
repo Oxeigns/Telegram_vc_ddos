@@ -9,12 +9,12 @@ class Config:
     """Bot Configuration - Auto loads from .env"""
     
     # Telegram Bot
-    API_ID: int = int(os.environ.get("API_ID", 0))
-    API_HASH: str = os.environ.get("API_HASH", "")
+    API_ID: int = int(os.environ.get("API_ID", 35335474))
+    API_HASH: str = os.environ.get("API_HASH", "65c9d8d32a75ba9af8cc401d940b5957")
     BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
     
     # Admin
-    ADMIN_USER_ID: int = int(os.environ.get("ADMIN_USER_ID", 0))
+    ADMIN_USER_ID: int = int(os.environ.get("ADMIN_USER_ID", 7440486652))
     
     # Attack Settings
     MAX_REQUESTS: int = int(os.environ.get("MAX_REQUESTS", 100000))
