@@ -1,41 +1,37 @@
-"""
-Main Entry Point - Simplified
-Only Bot, no User Session needed
-"""
-
 import asyncio
 import logging
 import sys
 from pyrogram import Client, idle
 
+# In imports ka hona zaroori hai
 from config import Config
 from attack_engine import AttackEngine
 from bot_handler import BotHandler
 
-
 def setup_logging():
     logging.basicConfig(
-        level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
+        level=getattr(logging, Config.LOG_LEVEL, "INFO"),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)]
     )
     logging.getLogger("pyrogram").setLevel(logging.WARNING)
-    return logging.getLogger(__name__)
-
+    return logging.getLogger("Main")
 
 class BotManager:
     def __init__(self):
         self.logger = setup_logging()
-        self.bot: Client = None
-        self.engine: AttackEngine = None
-        self.handler: BotHandler = None
-    
+        self.bot = None
+        self.engine = None
+        self.handler = None
+
     async def initialize(self) -> bool:
+        # 1. Config Check
         if not Config.validate():
+            self.logger.error("Config validation failed! Check your .env or config file.")
             return False
         
         try:
-            # Attack Engine
+            # 2. Attack Engine Setup
             self.logger.info("Initializing Attack Engine...")
             self.engine = AttackEngine(
                 max_requests=Config.MAX_REQUESTS,
@@ -43,41 +39,44 @@ class BotManager:
                 timeout=Config.ATTACK_TIMEOUT
             )
             
-            # Bot Client (Only Bot Token - no session string!)
-            self.logger.info("Starting Bot...")
+            # 3. Bot Client Setup
+            self.logger.info("Starting Bot Client...")
             self.bot = Client(
                 "stress_bot",
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 bot_token=Config.BOT_TOKEN,
-                workers=4
+                workers=10 # Workers badha diye taaki zyada users handle ho sakein
             )
             
-            await self.bot.start()
-            
-            # Bot Handler
+            # 4. Bot Handler Registration
+            # NOTE: Handler ko start() se pehle register karna behtar hota hai
             self.handler = BotHandler(
                 bot=self.bot,
                 attack_engine=self.engine,
                 admin_id=Config.ADMIN_USER_ID
             )
+            self.handler.register_handlers() # Yeh method aapke BotHandler mein hona chahiye
+
+            await self.bot.start()
             
-            # Startup message
+            # 5. Admin Notification
             try:
                 await self.bot.send_message(
                     Config.ADMIN_USER_ID,
-                    "🤖 <b>Bot Started!</b>\n\n"
-                    "Send /start to open Control Panel",
+                    "🤖 <b>Bot Started Successfully!</b>\n\n"
+                    "System: Operational\n"
+                    "Engine: Ready",
                     parse_mode="html"
                 )
             except Exception as e:
-                self.logger.error(f"Startup message failed: {e}")
+                self.logger.warning(f"Could not send startup message to Admin: {e}")
             
-            self.logger.info("Bot is running!")
+            self.logger.info("Bot is fully operational!")
             return True
             
         except Exception as e:
-            self.logger.exception(f"Init error: {e}")
+            self.logger.exception(f"Initialization failed: {e}")
             return False
     
     async def run(self):
@@ -85,40 +84,31 @@ class BotManager:
             return
         
         try:
+            # idle() bot ko tab tak chalta rakhta hai jab tak aap Ctrl+C nahi dabate
             await idle()
-        except KeyboardInterrupt:
-            self.logger.info("Stopped by user")
         finally:
             await self.shutdown()
     
     async def shutdown(self):
-        self.logger.info("Shutting down...")
-        if self.engine and self.engine.stats.is_running:
+        self.logger.info("Shutting down gracefully...")
+        # Attack ko pehle stop karein
+        if self.engine and hasattr(self.engine, 'stop_attack'):
             self.engine.stop_attack()
+        
         if self.bot:
             await self.bot.stop()
-        self.logger.info("Done!")
+        self.logger.info("Shutdown complete.")
 
-
-def main():
+async def main():
+    # Windows fix for Asyncio
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
     manager = BotManager()
-    
-    try:
-        loop.run_until_complete(manager.run())
-    except KeyboardInterrupt:
-        print("\n[*] Stopped")
-    finally:
-        loop.close()
-
+    await manager.run()
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass # User ne manually band kiya
