@@ -16,7 +16,7 @@ class Config:
     API_HASH: str = os.environ.get("API_HASH", "")
     BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
     SESSION_STRING: str = os.environ.get("SESSION_STRING", "")
-    
+    LOG_FILE = "bot.log"
     # Admin
     ADMIN_USER_ID: int = int(os.environ.get("ADMIN_USER_ID", 0))
     
