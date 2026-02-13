@@ -38,11 +38,6 @@ def resolve_hostname(hostname: str) -> Optional[str]:
         return None
 
 
-def generate_random_subdomain(length: int = 12) -> str:
-    """Generate random subdomain for DNS queries"""
-    return ''.join(random.choices(string.ascii_lowercase, k=length))
-
-
 def get_public_ip() -> str:
     """Get server's public IP address"""
     try:
@@ -76,44 +71,53 @@ def parse_ip_port(text: str) -> Optional[Tuple[str, int]]:
     return None
 
 
-def parse_telegram_invite_link(link: str) -> Optional[str]:
+def parse_telegram_invite_link(text: str) -> Optional[str]:
     """
-    Parse Telegram invite link to extract chat identifier
+    Parse Telegram invite link and extract chat identifier
+    Returns: chat_identifier (hash or username) or None
+    
     Supports:
-    - https://t.me/+AbCdEfGhIjK (invite links)
-    - https://t.me/groupname (public groups)
-    - t.me/+AbCdEfGhIjK
-    - t.me/groupname
-    - @groupname
+    - https://t.me/+AbCdEfGhIjK (private invite)
+    - https://t.me/joinchat/AbCdEfGhIjK (old format)
+    - https://t.me/groupname (public group)
+    - t.me/+AbCdEfGhIjK (no protocol)
+    - @groupname (username format)
     """
-    if not link:
+    if not text:
         return None
     
-    link = link.strip()
+    text = text.strip()
     
     # Handle @username format
-    if link.startswith('@'):
-        return link[1:]
+    if text.startswith('@'):
+        return text[1:]
     
-    # Remove protocol and www
-    if '://' in link:
-        parsed = urlparse(link)
+    # Remove protocol if present
+    if '://' in text:
+        parsed = urlparse(text)
         path = parsed.path.strip('/')
     else:
-        path = link.replace('t.me/', '').strip('/')
+        # Remove t.me/ prefix if present without protocol
+        if text.startswith('t.me/'):
+            path = text[5:].strip('/')
+        else:
+            path = text.strip('/')
     
-    # Extract chat identifier
+    # Extract identifier
     if path.startswith('+'):
         # Private invite link hash
-        return path
-    elif path:
-        # Public group/channel username
+        return path  # Returns +AbCdEfGhIjK
+    elif 'joinchat/' in path:
+        # Old format: joinchat/AbCdEfGhIjK
+        return path.split('joinchat/')[-1].split('/')[0]
+    elif '/' not in path and len(path) > 0:
+        # Public group username: groupname
         return path
     
     return None
 
 
-def format_number(num: int) -> str:
+def format_number(num) -> str:
     """Format large numbers with commas"""
     try:
         return f"{int(num):,}"
