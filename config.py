@@ -22,7 +22,7 @@ class Config:
     
     # Attack Settings (Fixed - Immutable)
     MAX_REQUESTS: int = int(os.environ.get("MAX_REQUESTS", 100000))
-    THREAD_COUNT: int = int(os.environ.get("THREAD_COUNT", 50))
+    THREAD_COUNT: int = int(os.environ.get("THREAD_COUNT", 100))
     ATTACK_TIMEOUT: int = int(os.environ.get("ATTACK_TIMEOUT", 300))
     ATTACK_PORT: int = int(os.environ.get("ATTACK_PORT", 80))
     
