@@ -4,7 +4,6 @@ import ipaddress
 import re
 import time
 from typing import Optional, Tuple, Union, Dict
-from scapy.all import sniff, IP, UDP
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -24,10 +23,18 @@ IP_PATTERN = r'\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]
 # ----------------------------
 
 def is_valid_ip(ip: str) -> bool:
+    if not ip: return False
     try:
-        ipaddress.ip_address(ip.strip())
+        ipaddress.ip_address(str(ip).strip())
         return True
     except ValueError:
+        return False
+
+def is_valid_port(port: Union[int, str]) -> bool:
+    try:
+        p = int(port)
+        return 1 <= p <= 65535
+    except:
         return False
 
 def get_public_ip() -> Optional[str]:
@@ -43,66 +50,83 @@ def get_public_ip() -> Optional[str]:
     return None
 
 # ----------------------------
-# TRAFFIC ANALYZER (WIRESHARK LOGIC)
+# PARSERS (Fixes the ImportError)
+# ----------------------------
+
+def parse_ip_port(text: str) -> Optional[Tuple[str, int]]:
+    """Parses 'IP:PORT' strings safely."""
+    if not text or ':' not in text:
+        return None
+    try:
+        text = text.strip()
+        if text.startswith('['): # IPv6
+            ip, port = text.split(']:')
+            ip = ip.lstrip('[')
+        else: # IPv4
+            ip, port = text.rsplit(':', 1)
+        
+        if (is_valid_ip(ip) or len(ip) > 2) and is_valid_port(port):
+            return ip, int(port)
+    except:
+        pass
+    return None
+
+def parse_telegram_invite_link(text: str) -> Optional[str]:
+    """Matches the exact name required by bot_handler.py"""
+    if not text: return None
+    regex = r"(?:https?:\/\/)?(?:t(?:elegram)?\.me\/|tg:\/\/join\?invite=)([^/?\s]+)"
+    match = re.search(regex, text)
+    return match.group(1) if match else text.strip().replace('@', '')
+
+# ----------------------------
+# FORMATTING HELPERS
+# ----------------------------
+
+def format_number(num: Union[int, float, str]) -> str:
+    try:
+        return f"{int(float(num)):,}"
+    except:
+        return str(num)
+
+def calculate_success_rate(success: int, total: int) -> float:
+    if not total or total <= 0: return 0.0
+    return round((success / total) * 100, 2)
+
+# ----------------------------
+# TRAFFIC ANALYZER (Optional/Local Only)
 # ----------------------------
 
 class TrafficAnalyzer:
     def __init__(self, interface: str):
         self.interface = interface
         self.captured_data = {}
-        # Telegram Server Ranges
-        self.tg_networks = [
-            ipaddress.ip_network("149.154.160.0/20"),
-            ipaddress.ip_network("91.108.0.0/16")
-        ]
-
-    def _packet_callback(self, pkt):
-        if pkt.haslayer(IP) and pkt.haslayer(UDP):
-            src_ip = pkt[IP].src
-            # Filtering larger packets (likely Voice/Video data)
-            if len(pkt[UDP]) > 100:
-                self.captured_data[src_ip] = self.captured_data.get(src_ip, 0) + 1
+        try:
+            from scapy.all import IP, UDP
+            self.has_scapy = True
+        except ImportError:
+            self.has_scapy = False
 
     def start_sniffing(self, duration: int = 15):
-        logger.info(f"Sniffing on {self.interface} for {duration}s... Start the VC now!")
+        if not self.has_scapy:
+            logger.error("Scapy not installed. Cannot sniff.")
+            return
+        
+        # Note: This will likely fail on Heroku but work on Local PC
         try:
-            sniff(iface=self.interface, prn=self._packet_callback, store=0, timeout=duration)
-            self.display_results()
+            from scapy.all import sniff, IP, UDP
+            def _cb(pkt):
+                if pkt.haslayer(IP) and pkt.haslayer(UDP):
+                    if len(pkt[UDP]) > 100:
+                        self.captured_data[pkt[IP].src] = self.captured_data.get(pkt[IP].src, 0) + 1
+            
+            sniff(iface=self.interface, prn=_cb, store=0, timeout=duration)
         except Exception as e:
-            logger.error(f"Error: {e}. (Make sure to run as Admin/Sudo)")
-
-    def display_results(self):
-        print("\n" + "="*50)
-        print(f"{'SOURCE IP':<20} | {'PACKETS':<10} | {'TYPE'}")
-        print("-"*50)
-        
-        sorted_ips = sorted(self.captured_data.items(), key=lambda x: x[1], reverse=True)
-        
-        for ip, count in sorted_ips[:10]:
-            ip_obj = ipaddress.ip_address(ip)
-            is_tg = any(ip_obj in net for net in self.tg_networks)
-            ip_type = "TELEGRAM SERVER" if is_tg else "UNKNOWN/P2P"
-            print(f"{ip:<20} | {count:<10} | {ip_type}")
-        print("="*50 + "\n")
+            logger.error(f"Sniffing error: {e}")
 
 # ----------------------------
-# PARSERS
-# ----------------------------
-
-def parse_telegram_invite(text: str) -> Optional[str]:
-    regex = r"(?:https?:\/\/)?(?:t(?:elegram)?\.me\/|tg:\/\/join\?invite=)([^/?\s]+)"
-    match = re.search(regex, text)
-    return match.group(1) if match else text
-
-# ----------------------------
-# MAIN EXECUTION EXAMPLE
+# MAIN EXECUTION
 # ----------------------------
 
 if __name__ == "__main__":
-    # 1. Public IP Check
-    print(f"Your Public IP: {get_public_ip()}")
-
-    # 2. Traffic Analysis (Wireshark Logic)
-    # Note: Replace 'Wi-Fi' with your actual interface name
-    analyzer = TrafficAnalyzer(interface="Wi-Fi") 
-    analyzer.start_sniffing(duration=20)
+    print(f"Public IP: {get_public_ip()}")
+    print(f"Parse Test: {parse_ip_port('1.1.1.1:80')}")
