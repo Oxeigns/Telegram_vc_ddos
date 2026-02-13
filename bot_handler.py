@@ -126,7 +126,7 @@ class BotHandler:
             except Exception as e:
                 self.logger.error(f"Cancel error: {e}")
         
-        @self.bot.on_callback_query(filters.regex("^attack_(.+)
+      @self.bot.on_callback_query(filters.regex(r"^attack_(.+)$"))
     
     async def notify_vc_detected(self, vc_info: VCInfo):
         """Notify admin when VC detected via monitoring"""
