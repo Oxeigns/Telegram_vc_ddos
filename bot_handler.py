@@ -87,7 +87,13 @@ class BotHandler:
             
             await callback.edit_message_text(f"🚀 <b>Attack Started!</b>\nTarget: <code>{ip}:{port}</code>", parse_mode=ParseMode.HTML)
             # Yahan aapka attack_engine trigger hoga
-            asyncio.create_task(self.attack_engine.start(ip, int(port)))
+            asyncio.create_task(
+    asyncio.to_thread(
+        self.attack_engine.start_attack,
+        ip,
+        int(port)
+    )
+)
 
         @self.bot.on_callback_query(filters.regex("^attack_cancel$"))
         async def cancel_attack_callback(client, callback: CallbackQuery):
