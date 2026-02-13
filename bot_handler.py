@@ -107,39 +107,56 @@ class BotHandler:
             except Exception as e:
                 self.logger.error(f"Manual target callback error: {e}")
         
-        @self.bot.on_message(filters.text & filters.private)
-        async def handle_text_input(client, message):
-            """Handle all text input from admin"""
-            if message.from_user.id != self.admin_id:
+        @self.bot.on_callback_query(filters.regex("^attack_cancel$"))
+        async def cancel_attack_callback(client, callback: CallbackQuery):
+            """Handle cancel button"""
+            if callback.from_user.id != self.admin_id:
                 return
             
-            user_id = message.from_user.id
-            text = message.text.strip()
+            # Clear user state
+            if callback.from_user.id in user_states:
+                del user_states[callback.from_user.id]
             
-            # Check if waiting for invite link
-            if user_id in user_states and user_states[user_id].get('state') == 'waiting_for_invite_link':
-                await self._process_invite_link_input(message, text)
-                return
+            try:
+                await callback.edit_message_text(
+                    "❌ <b>Cancelled</b>\n\n"
+                    "Operation cancelled. No requests sent.",
+                    parse_mode=HTML_MODE
+                )
+            except Exception as e:
+                self.logger.error(f"Cancel error: {e}")
+        
+        @self.bot.on_callback_query(filters.regex("^attack_(.+)
+    
+    async def notify_vc_detected(self, vc_info: VCInfo):
+        """Notify admin when VC detected via monitoring"""
+        try:
+            server_ip = get_public_ip()
+            unique_id = random.randint(1000, 9999)
             
-            # Otherwise, try to parse as IP:PORT
-            parsed = parse_ip_port(text)
-            if parsed:
-                ip, port = parsed
-                await self._show_attack_confirmation(message, ip, port, "Manual IP Entry")
-                return
-            elif is_valid_ip(text):
-                await self._show_attack_confirmation(message, text, 80, "Manual IP Entry")
-                return
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Attack", callback_data=f"attack_{server_ip}_{Config.ATTACK_PORT}_{unique_id}_yes"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="attack_cancel")
+                ]
+            ])
             
-            # Unrecognized input
-            await message.reply_text(
-                "❓ <b>Unrecognized Input</b>\n\n"
-                "Please use:\n"
-                "• Telegram invite link (t.me/+...)\n"
-                "• IP:PORT format\n"
-                "• Or click '🔗 Manual Target' button first",
+            text = (
+                "🔍 <b>Voice Chat Auto-Detected!</b>\n\n"
+                f"📍 Group: <code>{vc_info.chat_title}</code>\n"
+                f"👥 Participants: <code>{vc_info.participants_count}</code>\n\n"
+                f"🌐 Target: <code>{server_ip}:{Config.ATTACK_PORT}</code>\n\n"
+                f"Attack this target?"
+            )
+            
+            await self.bot.send_message(
+                self.admin_id,
+                text,
+                reply_markup=keyboard,
                 parse_mode=HTML_MODE
             )
+        except Exception as e:
+            self.logger.error(f"Notify VC error: {e}")
     
     async def _process_invite_link_input(self, message, link: str):
         """Process invite link using vc_detector (which uses user session)"""
@@ -267,54 +284,3 @@ class BotHandler:
         )
         
         await message.reply_text(text, reply_markup=keyboard, parse_mode=HTML_MODE)
-    
-    @self.bot.on_callback_query(filters.regex("^attack_(.+)
-    
-    async def notify_vc_detected(self, vc_info: VCInfo):
-        """Notify admin when VC detected via monitoring"""
-        try:
-            server_ip = get_public_ip()
-            unique_id = random.randint(1000, 9999)
-            
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Attack", callback_data=f"attack_{server_ip}_{Config.ATTACK_PORT}_{unique_id}_yes"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="attack_cancel")
-                ]
-            ])
-            
-            text = (
-                "🔍 <b>Voice Chat Auto-Detected!</b>\n\n"
-                f"📍 Group: <code>{vc_info.chat_title}</code>\n"
-                f"👥 Participants: <code>{vc_info.participants_count}</code>\n\n"
-                f"🌐 Target: <code>{server_ip}:{Config.ATTACK_PORT}</code>\n\n"
-                f"Attack this target?"
-            )
-            
-            await self.bot.send_message(
-                self.admin_id,
-                text,
-                reply_markup=keyboard,
-                parse_mode=HTML_MODE
-            )
-        except Exception as e:
-            self.logger.error(f"Notify VC error: {e}")
-    
-    @self.bot.on_callback_query(filters.regex("^attack_cancel$"))
-    async def cancel_attack_callback(self, client, callback: CallbackQuery):
-        """Handle cancel button"""
-        if callback.from_user.id != self.admin_id:
-            return
-        
-        # Clear user state
-        if callback.from_user.id in user_states:
-            del user_states[callback.from_user.id]
-        
-        try:
-            await callback.edit_message_text(
-                "❌ <b>Cancelled</b>\n\n"
-                "Operation cancelled. No requests sent.",
-                parse_mode=HTML_MODE
-            )
-        except Exception as e:
-            self.logger.error(f"Cancel error: {e}")
