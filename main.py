@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from pyrogram import Client, idle
-from pyrogram.errors import SessionExpired, AuthKeyInvalid, ConnectionError
+from pyrogram.errors import SessionExpired, AuthKeyInvalid
 
 from config import Config
 from utils import get_public_ip
