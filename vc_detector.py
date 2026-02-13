@@ -1,40 +1,59 @@
 import asyncio
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 from dataclasses import dataclass
+
 from pyrogram import Client, raw
 from pyrogram.types import Chat
 from pyrogram.errors import (
     InviteHashExpired, InviteHashInvalid, UserAlreadyParticipant,
-    FloodWait
+    FloodWait, PeerIdInvalid, UsernameInvalid, UsernameNotOccupied
 )
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class VCInfo:
+    """Voice Chat details container"""
     chat_id: int
     chat_title: str
-    chat_username: Optional[str] = None
-    invite_link: Optional[str] = None
-    call_id: Optional[int] = None
     participants_count: int = 0
     is_active: bool = False
+    call_id: Optional[int] = None
+    chat_username: Optional[str] = None
 
 class VoiceChatDetector:
+    """Uses USER SESSION to reliably detect active Voice Chats"""
+    
     def __init__(self, user_client: Client, admin_id: int, check_interval: int = 10):
-        self.user_client = user_client  
+        self.user_client = user_client  # User Session (not bot)
         self.admin_id = admin_id
         self.check_interval = check_interval
-        self._last_vc_ids = set() # Store multiple active IDs
         self._running = False
+        self._last_detected_id = None
+        self._processed_chats: Set[int] = set()
 
-    async def _check_chat_vc(self, chat_id: int, title: str) -> Optional[VCInfo]:
-        """Raw API ka use karke updated VC status check karna"""
+    async def _resolve_peer_safe(self, identifier: str):
+        """Resolves username/ID to Peer object without cache issues"""
         try:
-            # Full chat info nikalna zaroori hai voice chat status ke liye
-            peer = await self.user_client.resolve_peer(chat_id)
+            # Clean identifier
+            if "t.me/" in identifier:
+                identifier = identifier.split("/")[-1].replace("+", "")
+            if identifier.startswith("@"):
+                identifier = identifier[1:]
             
+            return await self.user_client.resolve_peer(identifier)
+        except (PeerIdInvalid, UsernameInvalid, UsernameNotOccupied):
+            logger.error(f"❌ Invalid identifier: {identifier}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Peer Resolution Error: {e}")
+            return None
+
+    async def _fetch_vc_info(self, peer) -> Optional[VCInfo]:
+        """Deep check for active call using Raw API (Guarantees accuracy)"""
+        try:
+            # Full chat info fetch karein (Force server sync)
             if isinstance(peer, raw.types.InputPeerChannel):
                 full_chat = await self.user_client.invoke(
                     raw.functions.channels.GetFullChannel(channel=peer)
@@ -44,76 +63,100 @@ class VoiceChatDetector:
                     raw.functions.messages.GetFullChat(chat_id=peer.chat_id)
                 )
 
-            # Check if call exists and is NOT empty/closed
+            # Check for call attribute
             call = full_chat.full_chat.call
             if call and isinstance(call, raw.types.InputGroupCall):
-                # Call details fetch karna participants count ke liye
-                call_details = await self.user_client.invoke(
+                # Get live participants and status
+                call_data = await self.user_client.invoke(
                     raw.functions.phone.GetGroupCall(call=call, limit=1)
                 )
                 
-                return VCInfo(
-                    chat_id=chat_id,
-                    chat_title=title,
-                    call_id=call.id,
-                    participants_count=call_details.group_call.participants_count,
-                    is_active=True
-                )
+                # term_date agar nahi hai, toh call active hai
+                if not getattr(call_data.group_call, "term_date", None):
+                    title = full_chat.chats[0].title if full_chat.chats else "Unknown"
+                    username = getattr(full_chat.chats[0], "username", None)
+                    
+                    return VCInfo(
+                        chat_id=full_chat.chats[0].id,
+                        chat_title=title,
+                        chat_username=username,
+                        participants_count=call_data.group_call.participants_count,
+                        is_active=True,
+                        call_id=call.id
+                    )
         except Exception as e:
-            logger.debug(f"Error checking VC for {chat_id}: {e}")
+            logger.debug(f"VC Check silent error: {e}")
         return None
 
     async def process_invite_link(self, invite_link: str) -> Optional[Tuple[int, str, VCInfo]]:
-        """Link join karke turant VC status return karna"""
+        """Used for Manual Target input"""
         try:
-            # 1. Join Chat
-            chat = await self.user_client.join_chat(invite_link)
-            logger.info(f"Joined: {chat.title}")
+            logger.info(f"Processing link: {invite_link}")
             
-            # 2. Wait 1-2 sec taaki server update ho jaye
-            await asyncio.sleep(1.5)
+            # Join/Get chat status
+            try:
+                chat = await self.user_client.join_chat(invite_link)
+            except UserAlreadyParticipant:
+                chat = await self.user_client.get_chat(invite_link)
             
-            # 3. Direct check
-            vc_info = await self._check_chat_vc(chat.id, chat.title)
+            # 2 seconds wait for Telegram server sync
+            await asyncio.sleep(2)
             
+            peer = await self._resolve_peer_safe(str(chat.id))
+            if not peer:
+                return None
+                
+            vc_info = await self._fetch_vc_info(peer)
+            
+            # Agar VC active nahi hai toh empty container bhejein
             if not vc_info:
                 vc_info = VCInfo(chat_id=chat.id, chat_title=chat.title, is_active=False)
-            
-            return (chat.id, chat.title, vc_info)
+                
+            return chat.id, chat.title, vc_info
+
+        except (InviteHashExpired, InviteHashInvalid):
+            logger.error("Invite link expired or invalid.")
+            return None
         except Exception as e:
-            logger.error(f"Invite process error: {e}")
+            logger.error(f"Link process error: {e}")
             return None
 
-    async def check_voice_chats(self) -> Optional[VCInfo]:
-        """Joined chats mein active VC dhundna"""
-        try:
-            # get_dialogs(limit=50) kafi hai current active chats ke liye
-            async for dialog in self.user_client.get_dialogs(limit=50):
-                if dialog.chat.type in [ "group", "supergroup", "channel" ]:
-                    # Check if recently updated
-                    vc = await self._check_chat_vc(dialog.chat.id, dialog.chat.title)
-                    if vc and vc.is_active:
-                        # Sirf tab return karein agar naya VC ho ya admin ko batana ho
-                        if vc.chat_id not in self._last_vc_ids:
-                            self._last_vc_ids.add(vc.chat_id)
-                            return vc
-        except Exception as e:
-            logger.error(f"Monitoring check error: {e}")
-        return None
-
     async def monitor_loop(self, callback):
+        """Main loop to auto-detect VCs in joined groups"""
         self._running = True
-        logger.info("VC Monitoring Active...")
+        logger.info("🟢 Monitoring started via User Session...")
+        
         while self._running:
             try:
-                vc_info = await self.check_voice_chats()
-                if vc_info:
-                    await callback(vc_info)
+                # Scan top 40 recent dialogs
+                async for dialog in self.user_client.get_dialogs(limit=40):
+                    if dialog.chat.type.value in ["group", "supergroup", "channel"]:
+                        
+                        peer = await self._resolve_peer_safe(str(dialog.chat.id))
+                        if not peer:
+                            continue
+
+                        vc = await self._fetch_vc_info(peer)
+                        
+                        if vc and vc.is_active:
+                            # Notify only if it's a new call ID
+                            if self._last_detected_id != vc.call_id:
+                                self._last_detected_id = vc.call_id
+                                logger.info(f"🔥 VC Detected: {vc.chat_title} ({vc.participants_count} users)")
+                                await callback(vc)
+                                # Break to avoid flooding notifications in one cycle
+                                break 
                 
                 await asyncio.sleep(self.check_interval)
+
+            except FloodWait as e:
+                logger.warning(f"FloodWait: Sleeping for {e.value}s")
+                await asyncio.sleep(e.value)
             except Exception as e:
-                logger.error(f"Loop error: {e}")
+                logger.error(f"Monitor Loop Error: {e}")
                 await asyncio.sleep(10)
 
     def stop(self):
+        """Stop the detector"""
         self._running = False
+        logger.info("🛑 Monitoring stopped.")
