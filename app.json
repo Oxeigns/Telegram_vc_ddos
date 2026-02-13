@@ -1,60 +1,39 @@
 {
-  "name": "VC Monitor Bot",
-  "description": "Voice Chat detection and monitoring bot with Pyrogram",
-  "repository": "https://github.com/yourusername/vc-monitor-bot",
-  "logo": "https://telegram.org/img/t_logo.png",
-  "keywords": ["telegram", "bot", "pyrogram", "voice-chat", "monitoring"],
-  "stack": "heroku-22",
-  "formation": {
-    "worker": {
-      "quantity": 1,
-      "size": "basic"
-    }
-  },
+  "name": "Network Stress Test Bot",
+  "description": "Simple IP testing bot with clean UI",
+  "keywords": ["telegram", "bot", "network", "testing"],
+  "repository": "https://github.com/",
+  "logo": "",
   "env": {
     "API_ID": {
-      "description": "Your Telegram API ID from my.telegram.org",
+      "description": "Telegram API ID from my.telegram.org",
       "required": true
     },
     "API_HASH": {
-      "description": "Your Telegram API Hash from my.telegram.org",
-      "required": true
-    },
-    "SESSION_STRING": {
-      "description": "Pyrogram session string. Generate: python3 -c \"from pyrogram import Client; app=Client('s', api_id=YOUR_ID, api_hash='YOUR_HASH'); app.start(); print(app.export_session_string())\"",
+      "description": "Telegram API Hash from my.telegram.org",
       "required": true
     },
     "BOT_TOKEN": {
-      "description": "Your Bot Token from @BotFather",
+      "description": "Bot Token from @BotFather",
       "required": true
     },
     "ADMIN_USER_ID": {
-      "description": "Your Telegram User ID (numeric). Get from @userinfobot",
+      "description": "Your Telegram User ID",
       "required": true
     },
     "MAX_REQUESTS": {
-      "description": "Maximum requests per attack (immutable)",
+      "description": "Maximum requests per test",
       "value": "100000",
-      "required": true
-    },
-    "THREAD_COUNT": {
-      "description": "Number of attack threads",
-      "value": "50",
-      "required": true
-    },
-    "ATTACK_TIMEOUT": {
-      "description": "Maximum attack duration in seconds",
-      "value": "300",
-      "required": true
-    },
-    "VC_CHECK_INTERVAL": {
-      "description": "VC detection interval in seconds",
-      "value": "10",
       "required": false
     },
-    "LOG_LEVEL": {
-      "description": "Logging level (DEBUG/INFO/WARNING/ERROR)",
-      "value": "INFO",
+    "THREAD_COUNT": {
+      "description": "Number of threads",
+      "value": "100",
+      "required": false
+    },
+    "ATTACK_TIMEOUT": {
+      "description": "Test timeout in seconds",
+      "value": "300",
       "required": false
     }
   },
@@ -62,8 +41,5 @@
     {
       "url": "heroku/python"
     }
-  ],
-  "scripts": {
-    "postdeploy": "echo 'Bot deployed! Set environment variables and restart worker.'"
-  }
+  ]
 }
