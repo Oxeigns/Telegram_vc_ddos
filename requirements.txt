@@ -1,3 +1,4 @@
-pyrogram==2.0.106
+Pyrogram==2.0.106
 tgcrypto==1.2.5
-requests==2.31.0
+requests==2.32.3
+scapy==2.5.0
