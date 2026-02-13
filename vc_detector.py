@@ -32,27 +32,14 @@ class VoiceChatDetector:
         self._last_detected_id = None
 
     # -------------------------
-    # SAFE PEER RESOLUTION
-    # -------------------------
-
-    async def _get_peer(self, chat_id: int):
-        try:
-            return await self.user_client.resolve_peer(chat_id)
-        except Exception as e:
-            logger.error(f"Peer resolve failed: {e}")
-            return None
-
-    # -------------------------
-    # FETCH VC INFO
+    # SAFE VC FETCH
     # -------------------------
 
     async def _fetch_vc_info(self, chat_id: int) -> Optional[VCInfo]:
         try:
-            peer = await self._get_peer(chat_id)
-            if not peer:
-                return None
+            peer = await self.user_client.resolve_peer(chat_id)
 
-            # For Supergroups / Channels
+            # CHANNEL / SUPERGROUP
             if isinstance(peer, raw.types.InputPeerChannel):
                 full_chat = await self.user_client.invoke(
                     raw.functions.channels.GetFullChannel(channel=peer)
@@ -66,11 +53,13 @@ class VoiceChatDetector:
                 chat_obj = full_chat.chats[0]
                 full = full_chat.full_chat
 
+            # No active call
             if not getattr(full, "call", None):
                 return None
 
             call = full.call
 
+            # 🔥 FIX HERE
             call_data = await self.user_client.invoke(
                 raw.functions.phone.GetGroupCall(
                     call=call,
@@ -78,13 +67,14 @@ class VoiceChatDetector:
                 )
             )
 
-            # If term_date is None → active call
-            if not getattr(call_data.group_call, "term_date", None):
+            # call_data itself IS GroupCall
+            if not getattr(call_data, "term_date", None):
+
                 return VCInfo(
                     chat_id=chat_obj.id,
                     chat_title=chat_obj.title,
                     chat_username=getattr(chat_obj, "username", None),
-                    participants_count=call_data.group_call.participants_count,
+                    participants_count=getattr(call_data, "participants_count", 0),
                     is_active=True,
                     call_id=call.id
                 )
