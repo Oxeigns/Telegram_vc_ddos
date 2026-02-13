@@ -42,7 +42,7 @@ EOF
 
 ### 2. Heroku Deploy
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Oxeigns/Telegram_vc_ddos/tree/main)
 
 **Or manual:**
 
