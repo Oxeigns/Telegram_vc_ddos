@@ -212,19 +212,19 @@ class BotHandler:
             
             try:
                 await callback.edit_message_text(
-                    "🔗 <b>Manual Target - Invite Link</b>\n\n"
-                    "Send the Telegram invite link of the group where Voice Chat is active:\n\n"
-                    "<b>Supported formats:</b>\n"
-                    "• <code>https://t.me/+AbCdEfGhIjK</code> (private)\n"
-                    "• <code>https://t.me/groupname</code> (public)\n"
-                    "• <code>@groupname</code>\n\n"
-                    "Bot will:\"
-                    "1. Join the group using invite link\n"
-                    "2. Check for active Voice Chat\n"
-                    "3. Extract target IP\n"
-                    "4. Ask for confirmation before attack",
-                    parse_mode=HTML_MODE
-                )
+    "🔗 <b>Manual Target - Invite Link</b>\n\n"
+    "Send the Telegram invite link of the group where Voice Chat is active:\n\n"
+    "<b>Supported formats:</b>\n"
+    "• <code>https://t.me/+AbCdEfGhIjK</code> (private)\n"
+    "• <code>https://t.me/groupname</code> (public)\n"
+    "• <code>@groupname</code>\n\n"
+    "Bot will:\n"
+    "1. Join the group using invite link\n"
+    "2. Check for active Voice Chat\n"
+    "3. Extract target IP\n"
+    "4. Ask for confirmation before attack",
+    parse_mode=HTML_MODE
+)
             except Exception as e:
                 self.logger.error(f"Manual target error: {e}")
         
