@@ -11,14 +11,19 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import FloodWait, MessageNotModified, MessageDeleteForbidden
 
+# Fix: Import ParseMode from pyrogram.enums
+try:
+    from pyrogram.enums import ParseMode
+    HTML_MODE = ParseMode.HTML
+except ImportError:
+    # Fallback for older versions
+    HTML_MODE = "HTML"
+
 from config import Config, ATTACK_METHODS
 from utils import get_public_ip, is_valid_ip, parse_ip_port, format_number
 from vc_detector import VCInfo
 
 logger = logging.getLogger(__name__)
-
-# Parse mode constant
-PARSE_MODE = "html"
 
 
 class BotHandler:
@@ -39,7 +44,7 @@ class BotHandler:
         @self.bot.on_message(filters.command("start") & filters.private)
         async def start_handler(client, message):
             if message.from_user.id != self.admin_id:
-                await message.reply_text("⛔ <b>Unauthorized Access</b>", parse_mode=PARSE_MODE)
+                await message.reply_text("⛔ <b>Unauthorized Access</b>", parse_mode=HTML_MODE)
                 return
             
             status = "🟢 <b>MONITORING</b>" if Config.MONITORING_MODE else "⚪ <b>STANDBY</b>"
@@ -61,7 +66,7 @@ class BotHandler:
             )
             
             try:
-                await message.reply_text(text, reply_markup=keyboard, parse_mode=PARSE_MODE)
+                await message.reply_text(text, reply_markup=keyboard, parse_mode=HTML_MODE)
             except FloodWait as e:
                 await asyncio.sleep(e.value)
             except Exception as e:
@@ -98,10 +103,10 @@ class BotHandler:
                         "Join a Voice Chat to trigger detection."
                     )
                 
-                await message.reply_text(text, parse_mode=PARSE_MODE)
+                await message.reply_text(text, parse_mode=HTML_MODE)
             except Exception as e:
                 self.logger.error(f"Status handler error: {e}")
-                await message.reply_text(f"❌ Error: {str(e)[:100]}", parse_mode=PARSE_MODE)
+                await message.reply_text(f"❌ Error: {str(e)[:100]}", parse_mode=HTML_MODE)
         
         @self.bot.on_message(filters.command("stop") & filters.private)
         async def stop_handler(client, message):
@@ -124,10 +129,10 @@ class BotHandler:
                 else:
                     text = "ℹ️ No active attack to stop."
                 
-                await message.reply_text(text, parse_mode=PARSE_MODE)
+                await message.reply_text(text, parse_mode=HTML_MODE)
             except Exception as e:
                 self.logger.error(f"Stop handler error: {e}")
-                await message.reply_text(f"❌ Error: {str(e)[:100]}", parse_mode=PARSE_MODE)
+                await message.reply_text(f"❌ Error: {str(e)[:100]}", parse_mode=HTML_MODE)
         
         @self.bot.on_callback_query(filters.regex("^attack_(.+)_(.+)_(.+)_yes$"))
         async def confirm_attack(client, callback: CallbackQuery):
@@ -144,7 +149,7 @@ class BotHandler:
                 try:
                     await callback.edit_message_text(
                         f"⏳ <b>Starting Attack...</b>\nTarget: <code>{target_ip}:{target_port}</code>",
-                        parse_mode=PARSE_MODE
+                        parse_mode=HTML_MODE
                     )
                 except MessageNotModified:
                     pass
@@ -164,18 +169,18 @@ class BotHandler:
                             "Use /status for progress\n"
                             "Use /stop to halt"
                         )
-                        await callback.edit_message_text(text, parse_mode=PARSE_MODE)
+                        await callback.edit_message_text(text, parse_mode=HTML_MODE)
                     except MessageNotModified:
                         pass
                     
                     # Start monitoring task
                     asyncio.create_task(self._monitor_attack(callback.message))
                 else:
-                    await callback.edit_message_text("❌ Failed to start attack.", parse_mode=PARSE_MODE)
+                    await callback.edit_message_text("❌ Failed to start attack.", parse_mode=HTML_MODE)
                     
             except Exception as e:
                 self.logger.error(f"Confirm attack error: {e}")
-                await callback.edit_message_text(f"❌ Error: {str(e)[:100]}", parse_mode=PARSE_MODE)
+                await callback.edit_message_text(f"❌ Error: {str(e)[:100]}", parse_mode=HTML_MODE)
         
         @self.bot.on_callback_query(filters.regex("^attack_cancel$"))
         async def cancel_attack(client, callback: CallbackQuery):
@@ -187,7 +192,7 @@ class BotHandler:
                     "❌ <b>Attack Cancelled</b>\n\n"
                     "No requests were sent.\n"
                     "Join another VC or use manual target.",
-                    parse_mode=PARSE_MODE
+                    parse_mode=HTML_MODE
                 )
             except Exception as e:
                 self.logger.error(f"Cancel error: {e}")
@@ -207,7 +212,7 @@ class BotHandler:
                     "• <code>10.0.0.1:53</code>\n\n"
                     "Or just IP (defaults to 80):\n"
                     "• <code>192.168.1.1</code>",
-                    parse_mode=PARSE_MODE
+                    parse_mode=HTML_MODE
                 )
             except Exception as e:
                 self.logger.error(f"Manual target error: {e}")
@@ -226,7 +231,7 @@ class BotHandler:
             elif is_valid_ip(text):
                 ip, port = text, 80
             else:
-                await message.reply_text("❌ Invalid format. Use <code>IP:PORT</code> or just <code>IP</code>", parse_mode=PARSE_MODE)
+                await message.reply_text("❌ Invalid format. Use <code>IP:PORT</code> or just <code>IP</code>", parse_mode=HTML_MODE)
                 return
             
             try:
@@ -248,7 +253,7 @@ class BotHandler:
                     "Confirm to proceed?"
                 )
                 
-                await message.reply_text(msg_text, reply_markup=keyboard, parse_mode=PARSE_MODE)
+                await message.reply_text(msg_text, reply_markup=keyboard, parse_mode=HTML_MODE)
             except Exception as e:
                 self.logger.error(f"Handle manual IP error: {e}")
     
@@ -273,7 +278,7 @@ class BotHandler:
                 f"Target: <code>{stats['target']}</code>"
             )
             
-            await message.reply_text(text, parse_mode=PARSE_MODE)
+            await message.reply_text(text, parse_mode=HTML_MODE)
         except Exception as e:
             self.logger.error(f"Monitor attack error: {e}")
     
@@ -314,7 +319,7 @@ class BotHandler:
                 self.admin_id,
                 text,
                 reply_markup=keyboard,
-                parse_mode=PARSE_MODE
+                parse_mode=HTML_MODE
             )
         except FloodWait as e:
             await asyncio.sleep(e.value)
@@ -327,7 +332,7 @@ class BotHandler:
             await self.bot.send_message(
                 self.admin_id,
                 f"⚠️ <b>Error</b>\n\n<code>{error_msg[:4000]}</code>",
-                parse_mode=PARSE_MODE
+                parse_mode=HTML_MODE
             )
         except Exception as e:
             self.logger.error(f"Send error failed: {e}")
