@@ -6,7 +6,6 @@ Production-ready deployment for Heroku
 import asyncio
 import logging
 import sys
-import os
 from datetime import datetime
 from typing import Optional
 
@@ -32,11 +31,7 @@ def setup_logging() -> logging.Logger:
             logging.StreamHandler(sys.stdout),
         ],
     )
-    
-    # Reduce noise from pyrogram
     logging.getLogger("pyrogram").setLevel(logging.WARNING)
-    logging.getLogger("pyrogram.session").setLevel(logging.ERROR)
-    
     return logging.getLogger(__name__)
 
 
@@ -53,14 +48,11 @@ class BotManager:
         self.vc_detector: Optional[VoiceChatDetector] = None
         self.bot_handler: Optional[BotHandler] = None
         self.monitor_task: Optional[asyncio.Task] = None
-        self._shutdown_event = asyncio.Event()
-        self._initialized = False
-
-    # ---------------- INITIALIZE ---------------- #
+        self._running = False
 
     async def initialize(self) -> bool:
-        """Initialize all components with error handling"""
-        self.logger.info("=" * 50)
+        """Initialize all components"""
+        self.logger.info("=" * 60)
         self.logger.info("VC Monitor Bot - Starting Initialization")
         self.logger.info(f"Time: {datetime.now().isoformat()}")
         
@@ -71,7 +63,7 @@ class BotManager:
             self.logger.warning(f"Could not get server IP: {e}")
             server_ip = "unknown"
             
-        self.logger.info("=" * 50)
+        self.logger.info("=" * 60)
 
         if not Config.validate():
             self.logger.error("Configuration validation failed!")
@@ -86,7 +78,6 @@ class BotManager:
                 api_hash=Config.API_HASH,
                 session_string=Config.SESSION_STRING,
                 no_updates=False,
-                takeout=False,
             )
 
             # Initialize Bot Client
@@ -108,7 +99,7 @@ class BotManager:
                 timeout=Config.ATTACK_TIMEOUT,
             )
 
-            # Initialize VC Detector
+            # Initialize VC Detector (before bot handler)
             self.logger.info("Initializing VC Detector...")
             self.vc_detector = VoiceChatDetector(
                 user_client=self.user_client,
@@ -116,19 +107,23 @@ class BotManager:
                 check_interval=Config.VC_CHECK_INTERVAL,
             )
 
-            # Start clients with retry logic
+            # Start User Client
             self.logger.info("Starting User Client...")
-            await self._start_client_with_retry(self.user_client, "User Client")
-            
-            self.logger.info("Starting Bot Client...")
-            await self._start_client_with_retry(self.bot, "Bot Client")
+            await self.user_client.start()
+            self.logger.info("User Client connected!")
 
-            # Initialize bot handlers
+            # Start Bot Client
+            self.logger.info("Starting Bot Client...")
+            await self.bot.start()
+            self.logger.info("Bot Client connected!")
+
+            # Initialize Bot Handler with vc_detector
             self.logger.info("Registering Bot Handlers...")
             self.bot_handler = BotHandler(
                 bot=self.bot,
                 attack_engine=self.attack_engine,
                 admin_id=Config.ADMIN_USER_ID,
+                vc_detector=self.vc_detector,  # Pass vc_detector for invite link processing
             )
 
             # Send startup notification
@@ -138,53 +133,35 @@ class BotManager:
                     f"🤖 <b>Bot Started Successfully</b>\n\n"
                     f"🌐 Server IP: <code>{server_ip}</code>\n"
                     f"⏰ Time: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n\n"
-                    f"<b>Configuration:</b>\n"
+                    f"<b>Features:</b>\n"
+                    f"• Auto VC Detection\n"
+                    f"• Manual Target via Invite Link\n"
+                    f"• Fixed Request Limits\n\n"
+                    f"<b>Config:</b>\n"
                     f"├ Max Requests: <code>{Config.MAX_REQUESTS:,}</code>\n"
                     f"├ Threads: <code>{Config.THREAD_COUNT}</code>\n"
-                    f"├ Timeout: <code>{Config.ATTACK_TIMEOUT}s</code>\n"
-                    f"└ Monitoring: <code>{'Active' if Config.MONITORING_MODE else 'Disabled'}</code>",
+                    f"└ Timeout: <code>{Config.ATTACK_TIMEOUT}s</code>\n\n"
+                    f"Bot is ready!"
                 )
             except Exception as e:
                 self.logger.error(f"Failed to send startup message: {e}")
 
-            self._initialized = True
+            self._running = True
             self.logger.info("Initialization complete!")
             return True
 
         except SessionExpired:
             self.logger.error("Session expired! Generate new session string.")
             return False
-
         except AuthKeyInvalid:
-            self.logger.error("Invalid session string! Check your SESSION_STRING.")
+            self.logger.error("Invalid session string!")
             return False
-            
-        except ConnectionError as e:
-            self.logger.error(f"Connection error: {e}")
-            return False
-
         except Exception as e:
             self.logger.exception(f"Initialization error: {e}")
             return False
-    
-    async def _start_client_with_retry(self, client: Client, name: str, max_retries: int = 3):
-        """Start client with retry logic"""
-        for attempt in range(max_retries):
-            try:
-                await client.start()
-                self.logger.info(f"{name} started successfully")
-                return
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    self.logger.warning(f"{name} start failed (attempt {attempt + 1}): {e}")
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    raise
-
-    # ---------------- RUN ---------------- #
 
     async def run(self):
-        """Main run loop with proper signal handling"""
+        """Main run loop"""
         if not await self.initialize():
             return
 
@@ -192,13 +169,10 @@ class BotManager:
             if Config.MONITORING_MODE:
                 self.logger.info("Starting VC monitoring...")
                 self.monitor_task = asyncio.create_task(
-                    self._monitor_wrapper(),
-                    name="vc_monitor"
+                    self.vc_detector.monitor_loop(self.bot_handler.notify_vc_detected)
                 )
 
             self.logger.info("Bot is running. Press Ctrl+C to stop.")
-            
-            # Use idle() for graceful shutdown
             await idle()
             
         except asyncio.CancelledError:
@@ -209,93 +183,48 @@ class BotManager:
             self.logger.exception(f"Run error: {e}")
         finally:
             await self.shutdown()
-    
-    async def _monitor_wrapper(self):
-        """Wrapper for monitor loop with error handling"""
-        try:
-            await self.vc_detector.monitor_loop(
-                self.bot_handler.notify_vc_detected
-            )
-        except asyncio.CancelledError:
-            self.logger.info("Monitor task cancelled")
-            raise
-        except Exception as e:
-            self.logger.error(f"Monitor error: {e}")
-            # Try to notify admin
-            try:
-                await self.bot.send_message(
-                    Config.ADMIN_USER_ID,
-                    f"⚠️ Monitor error: {str(e)[:100]}"
-                )
-            except:
-                pass
-
-    # ---------------- SHUTDOWN ---------------- #
 
     async def shutdown(self):
-        """Graceful shutdown with proper cleanup"""
-        if not self._initialized:
-            return
-            
+        """Graceful shutdown"""
         self.logger.info("Shutting down...")
-        self._shutdown_event.set()
+        self._running = False
 
-        # Cancel monitor task gracefully
         if self.monitor_task and not self.monitor_task.done():
-            self.logger.info("Cancelling monitor task...")
             self.monitor_task.cancel()
             try:
-                await asyncio.wait_for(self.monitor_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await self.monitor_task
+            except asyncio.CancelledError:
                 pass
 
-        # Stop attack engine
-        if self.attack_engine:
-            try:
-                if hasattr(self.attack_engine, 'stats') and self.attack_engine.stats.is_running:
-                    self.logger.info("Stopping active attack...")
-                    self.attack_engine.stop_attack()
-                    await asyncio.sleep(1)  # Give threads time to stop
-            except Exception as e:
-                self.logger.error(f"Attack engine stop error: {e}")
+        if self.attack_engine and hasattr(self.attack_engine, 'stats'):
+            if self.attack_engine.stats.is_running:
+                self.attack_engine.stop_attack()
 
-        # Stop VC detector
         if self.vc_detector:
-            try:
-                self.vc_detector.stop()
-            except Exception as e:
-                self.logger.error(f"VC detector stop error: {e}")
+            self.vc_detector.stop()
 
-        # Stop clients gracefully
-        await self._stop_client(self.user_client, "User Client")
-        await self._stop_client(self.bot, "Bot Client")
+        try:
+            if self.user_client:
+                await self.user_client.stop()
+        except Exception as e:
+            self.logger.error(f"User client stop error: {e}")
+
+        try:
+            if self.bot:
+                await self.bot.stop()
+        except Exception as e:
+            self.logger.error(f"Bot client stop error: {e}")
 
         self.logger.info("Shutdown complete.")
-    
-    async def _stop_client(self, client: Optional[Client], name: str):
-        """Safely stop a client"""
-        if not client:
-            return
-            
-        try:
-            # Check if client has session attribute (means it was started)
-            if hasattr(client, 'session') and client.session:
-                self.logger.info(f"Stopping {name}...")
-                await client.stop()
-                self.logger.info(f"{name} stopped")
-        except Exception as e:
-            self.logger.error(f"{name} stop error: {e}")
 
 
 # ---------------- ENTRY POINT ---------------- #
 
 def main():
     """Synchronous entry point"""
-    # Windows specific: Use SelectorEventLoopPolicy
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    # Get or create event loop
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -312,7 +241,6 @@ def main():
         print(f"\n[!] Fatal error: {e}")
         sys.exit(1)
     finally:
-        # Clean up any remaining tasks
         try:
             pending = asyncio.all_tasks(loop)
             if pending:
@@ -322,7 +250,6 @@ def main():
         except Exception:
             pass
         
-        # Close loop gracefully
         try:
             if not loop.is_closed():
                 loop.close()
