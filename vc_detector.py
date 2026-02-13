@@ -1,16 +1,14 @@
 """
 Voice Chat Detection Module
-Monitors user's VC presence across chats
+Monitors active voice chats in groups
 """
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 from dataclasses import dataclass
 from pyrogram import Client
-from pyrogram.raw.functions.phone import GetGroupCall
-from pyrogram.raw.types import InputGroupCall
-from pyrogram.errors import BadRequest, Forbidden
+from pyrogram.types import Chat
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +18,13 @@ class VCInfo:
     """Voice Chat information container"""
     chat_id: int
     chat_title: str
-    call_id: int
-    participants_count: int
-    is_active: bool
-    
+    call_id: Optional[int] = None
+    participants_count: int = 0
+    is_active: bool = False
+
 
 class VoiceChatDetector:
-    """Detects admin presence in voice chats"""
+    """Detects active voice chats in groups"""
     
     def __init__(self, user_client: Client, admin_id: int, check_interval: int = 10):
         self.user_client = user_client
@@ -36,46 +34,31 @@ class VoiceChatDetector:
         self._running = False
     
     async def check_voice_chats(self) -> Optional[VCInfo]:
-        """Check if admin is in any active voice chat"""
+        """Check for active voice chats in groups"""
         try:
-            # Iterate through all dialogs
+            # Get all dialogs (chats)
             async for dialog in self.user_client.get_dialogs():
-                chat = dialog.chat
-                if not chat:
-                    continue
-                
                 try:
-                    # Check for voice chat using raw functions
-                    # Note: This requires the full chat info
-                    full_chat = await self.user_client.get_chat(chat.id)
+                    chat = dialog.chat
+                    if not chat:
+                        continue
                     
-                    # Check if there's an active voice chat
-                    if hasattr(full_chat, 'voice_chat') and full_chat.voice_chat:
-                        vc = full_chat.voice_chat
+                    # Only check groups and channels (not private chats)
+                    if chat.type not in ["group", "supergroup", "channel"]:
+                        continue
+                    
+                    # Check for active voice/video chat
+                    vc_info = await self._check_chat_vc(chat)
+                    
+                    if vc_info and vc_info.is_active:
+                        # Only return if it's a new/different VC
+                        if not self._last_vc or self._last_vc.chat_id != vc_info.chat_id:
+                            self._last_vc = vc_info
+                            logger.info(f"✅ Active VC found: {vc_info.chat_title} (ID: {vc_info.chat_id})")
+                            return vc_info
                         
-                        if vc and getattr(vc, 'is_active', False):
-                            # Check if admin is participant (via participants list)
-                            participants = await self._get_participants(chat.id, vc.id)
-                            
-                            if self.admin_id in participants:
-                                vc_info = VCInfo(
-                                    chat_id=chat.id,
-                                    chat_title=chat.title or chat.first_name or "Unknown",
-                                    call_id=vc.id,
-                                    participants_count=len(participants),
-                                    is_active=True
-                                )
-                                
-                                # Only return if it's a new/different VC
-                                if not self._last_vc or self._last_vc.chat_id != vc_info.chat_id:
-                                    self._last_vc = vc_info
-                                    return vc_info
-                                    
-                except (BadRequest, Forbidden) as e:
-                    logger.debug(f"Cannot access VC in chat {chat.id}: {e}")
-                    continue
                 except Exception as e:
-                    logger.error(f"Error checking chat {chat.id}: {e}")
+                    logger.debug(f"Error checking chat {getattr(chat, 'id', 'unknown')}: {e}")
                     continue
                     
         except Exception as e:
@@ -83,53 +66,83 @@ class VoiceChatDetector:
         
         return None
     
-    async def _get_participants(self, chat_id: int, call_id: int) -> list:
-        """Get voice chat participants"""
+    async def _check_chat_vc(self, chat: Chat) -> Optional[VCInfo]:
+        """Check if chat has an active voice/video chat"""
         try:
-            # Use raw function to get participants
-            result = await self.user_client.invoke(
-                GetGroupCall(
-                    call=InputGroupCall(
-                        id=call_id,
-                        access_hash=0  # This needs to be fetched properly
-                    ),
-                    limit=200
-                )
-            )
+            # Get full chat info
+            full_chat = await self.user_client.get_chat(chat.id)
             
-            # Extract user IDs from participants
-            participants = []
-            for participant in getattr(result, 'participants', []):
-                peer = getattr(participant, 'peer', None)
-                if peer:
-                    user_id = getattr(peer, 'user_id', None)
-                    if user_id:
-                        participants.append(user_id)
+            # Check for video_chat (newer Pyrogram versions) or voice_chat
+            vc = None
             
-            return participants
+            if hasattr(full_chat, 'video_chat') and full_chat.video_chat:
+                vc = full_chat.video_chat
+                logger.debug(f"Found video_chat in {chat.title}")
+            elif hasattr(full_chat, 'voice_chat') and full_chat.voice_chat:
+                vc = full_chat.voice_chat
+                logger.debug(f"Found voice_chat in {chat.title}")
+            
+            if vc:
+                is_active = getattr(vc, 'is_active', False)
+                
+                if is_active:
+                    participants = getattr(vc, 'participants_count', 0)
+                    call_id = getattr(vc, 'id', None)
+                    
+                    logger.debug(f"Active VC in {chat.title}: {participants} participants")
+                    
+                    return VCInfo(
+                        chat_id=chat.id,
+                        chat_title=chat.title or "Unknown",
+                        call_id=call_id,
+                        participants_count=participants,
+                        is_active=True
+                    )
             
         except Exception as e:
-            logger.error(f"Failed to get participants: {e}")
-            return []
+            logger.debug(f"Error getting VC info for chat {chat.id}: {e}")
+        
+        return None
     
     async def monitor_loop(self, callback):
         """Continuous monitoring loop"""
         self._running = True
-        logger.info("VC monitoring started")
+        logger.info("🔍 VC monitoring started")
+        logger.info(f"⏱️ Check interval: {self.check_interval} seconds")
+        
+        check_count = 0
         
         while self._running:
             try:
+                check_count += 1
+                if check_count % 6 == 0:  # Log every minute
+                    logger.info(f"🔍 VC check #{check_count} - scanning for active voice chats...")
+                
                 vc_info = await self.check_voice_chats()
+                
                 if vc_info:
-                    logger.info(f"Admin found in VC: {vc_info.chat_title}")
-                    await callback(vc_info)
+                    logger.info(f"📞 Active VC detected: {vc_info.chat_title}")
+                    try:
+                        await callback(vc_info)
+                    except Exception as e:
+                        logger.error(f"Callback error: {e}")
+                
+                # Sleep with cancellation check
+                for _ in range(self.check_interval):
+                    if not self._running:
+                        break
+                    await asyncio.sleep(1)
                     
+            except asyncio.CancelledError:
+                logger.info("Monitor loop cancelled")
+                raise
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}")
-            
-            await asyncio.sleep(self.check_interval)
+                await asyncio.sleep(5)
+        
+        logger.info("🛑 VC monitoring stopped")
     
     def stop(self):
         """Stop monitoring"""
         self._running = False
-        logger.info("VC monitoring stopped")
+        logger.info("Stop signal received")
