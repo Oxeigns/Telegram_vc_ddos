@@ -1,173 +1,108 @@
-"""
-Utility functions for safe network operations and validation
-Final Optimized Version (10/10)
-"""
-
 import socket
 import logging
 import ipaddress
 import re
-from typing import Optional, Tuple, Union
-from urllib.parse import urlparse
+import time
+from typing import Optional, Tuple, Union, Dict
+from scapy.all import sniff, IP, UDP
 
 # Logging setup
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("NetUtility")
 
 # Constants
 IP_SERVICES = [
     "https://api.ipify.org",
     "https://ifconfig.me/ip",
-    "https://checkip.amazonaws.com",
-    "https://icanhazip.com",
-    "https://ident.me"
+    "https://checkip.amazonaws.com"
 ]
 
-# IP Validation Regex (Strict)
 IP_PATTERN = r'\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}\b'
 
 # ----------------------------
-# NETWORK VALIDATION
+# NETWORK VALIDATION & IP TOOLS
 # ----------------------------
 
 def is_valid_ip(ip: str) -> bool:
-    """Validate IPv4 or IPv6 address strictly."""
-    if not ip or not isinstance(ip, str):
-        return False
     try:
         ipaddress.ip_address(ip.strip())
         return True
     except ValueError:
         return False
 
-def is_valid_port(port: Union[int, str]) -> bool:
-    """Validate port number range (1-65535)."""
-    try:
-        p = int(port)
-        return 1 <= p <= 65535
-    except (ValueError, TypeError):
-        return False
-
-def resolve_hostname(hostname: str) -> Optional[str]:
-    """Resolve hostname to IP safely with error handling."""
-    if not hostname:
-        return None
-    try:
-        return socket.gethostbyname(hostname.strip())
-    except (socket.gaierror, socket.herror) as e:
-        logger.warning(f"Resolution failed for {hostname}: {e}")
-        return None
-
-# ----------------------------
-# PUBLIC IP DETECTION (FIXED)
-# ----------------------------
-
 def get_public_ip() -> Optional[str]:
-    """
-    Fetches real public IP using multiple fallbacks and strict Regex.
-    Works even if services return HTML or extra text.
-    """
     import requests
-    
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
-    with requests.Session() as session:
-        session.headers.update(headers)
-        
-        for url in IP_SERVICES:
-            try:
-                # Short timeout to skip dead services fast
-                response = session.get(url, timeout=4)
-                if response.status_code == 200:
-                    raw_content = response.text.strip()
-                    
-                    # Regex se sirf IP extract karna (Real IP fix)
-                    found_ips = re.findall(IP_PATTERN, raw_content)
-                    
-                    if found_ips:
-                        ip = found_ips[0]
-                        if is_valid_ip(ip):
-                            return ip
-                            
-            except requests.RequestException:
-                continue
-
-    logger.error("Critical: All Public IP services failed.")
+    for url in IP_SERVICES:
+        try:
+            response = requests.get(url, timeout=4)
+            if response.status_code == 200:
+                found_ips = re.findall(IP_PATTERN, response.text)
+                if found_ips and is_valid_ip(found_ips[0]):
+                    return found_ips[0]
+        except: continue
     return None
+
+# ----------------------------
+# TRAFFIC ANALYZER (WIRESHARK LOGIC)
+# ----------------------------
+
+class TrafficAnalyzer:
+    def __init__(self, interface: str):
+        self.interface = interface
+        self.captured_data = {}
+        # Telegram Server Ranges
+        self.tg_networks = [
+            ipaddress.ip_network("149.154.160.0/20"),
+            ipaddress.ip_network("91.108.0.0/16")
+        ]
+
+    def _packet_callback(self, pkt):
+        if pkt.haslayer(IP) and pkt.haslayer(UDP):
+            src_ip = pkt[IP].src
+            # Filtering larger packets (likely Voice/Video data)
+            if len(pkt[UDP]) > 100:
+                self.captured_data[src_ip] = self.captured_data.get(src_ip, 0) + 1
+
+    def start_sniffing(self, duration: int = 15):
+        logger.info(f"Sniffing on {self.interface} for {duration}s... Start the VC now!")
+        try:
+            sniff(iface=self.interface, prn=self._packet_callback, store=0, timeout=duration)
+            self.display_results()
+        except Exception as e:
+            logger.error(f"Error: {e}. (Make sure to run as Admin/Sudo)")
+
+    def display_results(self):
+        print("\n" + "="*50)
+        print(f"{'SOURCE IP':<20} | {'PACKETS':<10} | {'TYPE'}")
+        print("-"*50)
+        
+        sorted_ips = sorted(self.captured_data.items(), key=lambda x: x[1], reverse=True)
+        
+        for ip, count in sorted_ips[:10]:
+            ip_obj = ipaddress.ip_address(ip)
+            is_tg = any(ip_obj in net for net in self.tg_networks)
+            ip_type = "TELEGRAM SERVER" if is_tg else "UNKNOWN/P2P"
+            print(f"{ip:<20} | {count:<10} | {ip_type}")
+        print("="*50 + "\n")
 
 # ----------------------------
 # PARSERS
 # ----------------------------
 
-def parse_ip_port(text: str) -> Optional[Tuple[str, int]]:
-    """
-    Parses IP:PORT strings. Supports IPv4, IPv6 [brackets], and Hostnames.
-    Example: '192.168.1.1:80' or '[2001:db8::1]:443'
-    """
-    if not text or ':' not in text:
-        return None
-
-    text = text.strip()
-    try:
-        if text.startswith('['): # IPv6 Case
-            if ']:' not in text: return None
-            ip_part, port_part = text.split(']:')
-            ip = ip_part.lstrip('[')
-        else: # IPv4 or Hostname Case
-            ip, port_part = text.rsplit(':', 1)
-
-        port = int(port_part)
-        
-        if (is_valid_ip(ip) or len(ip) > 2) and is_valid_port(port):
-            return ip, port
-
-    except (ValueError, IndexError):
-        pass
-    return None
-
-def parse_telegram_invite_link(text: str) -> Optional[str]:
-    """
-    Extracts Telegram handle/hash from links or usernames.
-    Supports: @user, t.me/joinchat/hash, t.me/+hash, tg://join?invite=hash
-    """
-    if not text:
-        return None
-
-    text = text.strip()
-    if text.startswith('@'):
-        return text[1:]
-
-    # Regex for t.me, telegram.me and tg:// protocols
+def parse_telegram_invite(text: str) -> Optional[str]:
     regex = r"(?:https?:\/\/)?(?:t(?:elegram)?\.me\/|tg:\/\/join\?invite=)([^/?\s]+)"
     match = re.search(regex, text)
-    
-    path = match.group(1) if match else text.replace('t.me/', '')
-
-    if 'joinchat/' in path:
-        return path.split('joinchat/')[1]
-    
-    # Remove leading + if it's a private hash link
-    # Or just return the username/path
-    return path.split('/')[0] if path else None
+    return match.group(1) if match else text
 
 # ----------------------------
-# FORMATTING & HELPERS
+# MAIN EXECUTION EXAMPLE
 # ----------------------------
 
-def format_number(num: Union[int, float, str]) -> str:
-    """Format large numbers with commas (10000 -> 10,000)."""
-    try:
-        return f"{int(float(num)):,}"
-    except (ValueError, TypeError):
-        return str(num)
+if __name__ == "__main__":
+    # 1. Public IP Check
+    print(f"Your Public IP: {get_public_ip()}")
 
-def calculate_success_rate(success: int, total: int) -> float:
-    """Safely calculate percentage."""
-    if not isinstance(success, int) or not isinstance(total, int) or total <= 0:
-        return 0.0
-    return round((success / total) * 100, 2)
-
-def truncate_string(text: str, max_length: int = 50) -> str:
-    """Truncate long strings with ellipsis."""
-    if not text: return ""
-    text = text.strip()
-    return (text[:max_length-3] + "...") if len(text) > max_length else text
+    # 2. Traffic Analysis (Wireshark Logic)
+    # Note: Replace 'Wi-Fi' with your actual interface name
+    analyzer = TrafficAnalyzer(interface="Wi-Fi") 
+    analyzer.start_sniffing(duration=20)
