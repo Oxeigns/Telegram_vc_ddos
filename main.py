@@ -18,103 +18,92 @@ from vc_detector import VoiceChatDetector
 from bot_handler import BotHandler
 
 
-# Configure logging
+# ---------------- LOGGING SETUP ---------------- #
+
 def setup_logging():
-    """Setup comprehensive logging"""
     logging.basicConfig(
         level=getattr(logging, Config.LOG_LEVEL),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(Config.LOG_FILE),
-            logging.StreamHandler(sys.stdout)
-        ]
+            logging.StreamHandler(sys.stdout),
+        ],
     )
-    
-    # Reduce noise from pyrogram
+
     logging.getLogger("pyrogram").setLevel(logging.WARNING)
-    
     return logging.getLogger(__name__)
 
 
+# ---------------- BOT MANAGER ---------------- #
+
 class BotManager:
-    """Main bot manager coordinating all components"""
-    
     def __init__(self):
         self.logger = setup_logging()
-        self.user_client: Client = None
-        self.bot: Client = None
-        self.attack_engine: AttackEngine = None
-        self.vc_detector: VoiceChatDetector = None
-        self.bot_handler: BotHandler = None
+        self.user_client: Client | None = None
+        self.bot: Client | None = None
+        self.attack_engine: AttackEngine | None = None
+        self.vc_detector: VoiceChatDetector | None = None
+        self.bot_handler: BotHandler | None = None
+        self.monitor_task: asyncio.Task | None = None
         self._running = False
-    
+
+    # ---------------- INITIALIZE ---------------- #
+
     async def initialize(self) -> bool:
-        """Initialize all components"""
         self.logger.info("=" * 50)
         self.logger.info("VC Monitor Bot - Starting Initialization")
         self.logger.info(f"Time: {datetime.now().isoformat()}")
         self.logger.info(f"Server IP: {get_public_ip()}")
         self.logger.info("=" * 50)
-        
-        # Validate configuration
+
         if not Config.validate():
             self.logger.error("Configuration validation failed!")
             return False
-        
+
         try:
-            # Initialize User Client (for VC detection)
-            self.logger.info("Initializing User Client...")
+            # User client
             self.user_client = Client(
                 "user_session",
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 session_string=Config.SESSION_STRING,
-                no_updates=False  # Need updates for VC detection
+                no_updates=False,
             )
-            
-            # Initialize Bot Client
-            self.logger.info("Initializing Bot Client...")
+
+            # Bot client
             self.bot = Client(
                 "bot",
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 bot_token=Config.BOT_TOKEN,
                 workers=4,
-                parse_mode="html"
+                parse_mode="html",
             )
-            
-            # Initialize Attack Engine
-            self.logger.info("Initializing Attack Engine...")
+
+            # Components
             self.attack_engine = AttackEngine(
                 max_requests=Config.MAX_REQUESTS,
                 thread_count=Config.THREAD_COUNT,
-                timeout=Config.ATTACK_TIMEOUT
+                timeout=Config.ATTACK_TIMEOUT,
             )
-            
-            # Initialize VC Detector
-            self.logger.info("Initializing VC Detector...")
+
             self.vc_detector = VoiceChatDetector(
                 user_client=self.user_client,
                 admin_id=Config.ADMIN_USER_ID,
-                check_interval=Config.VC_CHECK_INTERVAL
+                check_interval=Config.VC_CHECK_INTERVAL,
             )
-            
+
             # Start clients
-            self.logger.info("Starting User Client...")
             await self.user_client.start()
-            
-            self.logger.info("Starting Bot Client...")
             await self.bot.start()
-            
-            # Initialize bot handlers
-            self.logger.info("Registering Bot Handlers...")
+
             self.bot_handler = BotHandler(
                 bot=self.bot,
                 attack_engine=self.attack_engine,
-                admin_id=Config.ADMIN_USER_ID
+                admin_id=Config.ADMIN_USER_ID,
             )
-            
-            # Send startup notification
+
+            # Startup message
             await self.bot.send_message(
                 Config.ADMIN_USER_ID,
                 f"🤖 <b>Bot Started Successfully</b>\n\n"
@@ -124,79 +113,92 @@ class BotManager:
                 f"├ Max Requests: <code>{Config.MAX_REQUESTS:,}</code>\n"
                 f"├ Threads: <code>{Config.THREAD_COUNT}</code>\n"
                 f"├ Timeout: <code>{Config.ATTACK_TIMEOUT}s</code>\n"
-                f"└ Monitoring: <code>{'Active' if Config.MONITORING_MODE else 'Disabled'}</code>\n\n"
-                f"Join a Voice Chat to begin!"
+                f"└ Monitoring: <code>{'Active' if Config.MONITORING_MODE else 'Disabled'}</code>",
             )
-            
+
             self.logger.info("Initialization complete!")
             return True
-            
+
         except SessionExpired:
             self.logger.error("Session expired! Generate new session string.")
             return False
+
         except AuthKeyInvalid:
             self.logger.error("Invalid session string! Check your SESSION_STRING.")
             return False
+
         except Exception as e:
-            self.logger.error(f"Initialization error: {e}", exc_info=True)
+            self.logger.exception(f"Initialization error: {e}")
             return False
-    
+
+    # ---------------- RUN ---------------- #
+
     async def run(self):
-        """Main run loop"""
         if not await self.initialize():
-            sys.exit(1)
-        
+            return  # ❌ DO NOT use sys.exit inside async
+
         self._running = True
-        
+
         try:
-            # Start VC monitoring if enabled
             if Config.MONITORING_MODE:
                 self.logger.info("Starting VC monitoring...")
-                monitor_task = asyncio.create_task(
+                self.monitor_task = asyncio.create_task(
                     self.vc_detector.monitor_loop(
                         self.bot_handler.notify_vc_detected
                     )
                 )
-            
-            # Keep running
-            self.logger.info("Bot is running. Press Ctrl+C to stop.")
+
+            self.logger.info("Bot is running...")
             await idle()
-            
-        except asyncio.CancelledError:
-            self.logger.info("Received cancellation signal")
-        except KeyboardInterrupt:
-            self.logger.info("Received keyboard interrupt")
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.logger.info("Shutdown signal received")
+
         finally:
             await self.shutdown()
-    
+
+    # ---------------- SHUTDOWN ---------------- #
+
     async def shutdown(self):
-        """Graceful shutdown"""
         self.logger.info("Shutting down...")
         self._running = False
-        
-        # Stop attack if running
-        if self.attack_engine and self.attack_engine.stats.is_running:
-            self.logger.info("Stopping active attack...")
-            self.attack_engine.stop_attack()
-        
+
+        # Cancel monitoring task
+        if self.monitor_task:
+            self.monitor_task.cancel()
+            try:
+                await self.monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        # Stop attack safely
+        if self.attack_engine and getattr(self.attack_engine, "stats", None):
+            if self.attack_engine.stats.is_running:
+                self.attack_engine.stop_attack()
+
         # Stop VC detector
         if self.vc_detector:
             self.vc_detector.stop()
-        
-        # Stop clients
+
+        # Stop clients safely
         try:
-            if self.user_client:
+            if self.user_client and self.user_client.is_connected:
                 await self.user_client.stop()
-            if self.bot:
+        except Exception as e:
+            self.logger.error(f"User client stop error: {e}")
+
+        try:
+            if self.bot and self.bot.is_connected:
                 await self.bot.stop()
         except Exception as e:
-            self.logger.error(f"Error during shutdown: {e}")
-        
+            self.logger.error(f"Bot client stop error: {e}")
+
         self.logger.info("Shutdown complete.")
 
 
+# ---------------- ENTRY POINT ---------------- #
+
 async def main():
-    """Entry point"""
     manager = BotManager()
     await manager.run()
 
