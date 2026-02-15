@@ -8,10 +8,10 @@ import sys
 
 from pyrogram import Client, idle
 
-from attack_engine_fixed import AttackEngine
-from bot_handler_fixed import BotHandler
+from attack_engine import AttackEngine
+from bot_handler import BotHandler
 from config import Config
-from vc_detector_fixed import VCDetector
+from vc_detector import VCDetector
 
 
 def setup_logging(log_file: str) -> None:
