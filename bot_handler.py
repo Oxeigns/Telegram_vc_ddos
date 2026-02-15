@@ -39,12 +39,21 @@ class SessionContext:
 
 
 class BotHandler:
-    def __init__(self, bot: Client, detector: VCDetector, engine: AttackEngine, admin_id: Optional[int], max_duration: int) -> None:
+    def __init__(
+        self,
+        bot: Client,
+        detector: VCDetector,
+        engine: AttackEngine,
+        admin_id: Optional[int],
+        max_duration: int,
+        scan_limit: int,
+    ) -> None:
         self.bot = bot
         self.detector = detector
         self.engine = engine
         self.admin_id = admin_id
         self.max_duration = max_duration
+        self.scan_limit = scan_limit
         self.ctx = SessionContext()
 
         user_filter = filters.user(admin_id) if admin_id is not None else filters.private
@@ -56,7 +65,7 @@ class BotHandler:
         self.ctx.state = BotState.SCANNING
         status = await message.reply("🔎 Scanning top dialogs for active voice chats...")
         try:
-            records = await self.detector.scan_active_voice_chats(limit=50)
+            records = await self.detector.scan_active_voice_chats(limit=self.scan_limit)
         except FloodWait as wait_err:
             await status.edit_text(f"⚠️ FloodWait: retry after {wait_err.value} seconds.")
             self.ctx.state = BotState.IDLE
@@ -64,7 +73,7 @@ class BotHandler:
 
         self.ctx.active_records = records
         if not records:
-            await status.edit_text("No active voice chats found.")
+            await status.edit_text("No active voice chat found. Please start VC in your group, then run /scan again.")
             self.ctx.state = BotState.IDLE
             return
 
@@ -106,14 +115,17 @@ class BotHandler:
                 metadata = await self.detector.join_and_extract_metadata(self.ctx.selected_record)
                 self.ctx.extracted_metadata = metadata
                 self.ctx.state = BotState.READY
+                join_state = "✅ Joined active VC and extracted metadata." if metadata.get("joined") else "ℹ️ VC is active. Metadata extracted without joining."
+                join_hint = f"\nReason: {metadata['notice']}" if metadata.get("notice") else ""
                 await callback_query.message.edit_text(
-                    "Metadata extracted.\n"
+                    f"{join_state}{join_hint}\n"
                     "For safety, diagnostics can run only against private/loopback IP targets.\n"
                     "Use: /diag <ip> <port> <duration>",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Leave VC", callback_data="leave")]]),
                 )
             except Exception as exc:
                 self.ctx.state = BotState.IDLE
+                LOGGER.exception("Join/extract failed for %s", self.ctx.selected_record.title)
                 await callback_query.message.edit_text(f"Join failed: {exc}")
             await callback_query.answer()
             return
