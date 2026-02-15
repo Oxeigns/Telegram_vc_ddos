@@ -1,6 +1,6 @@
-"""Async network diagnostics engine.
-
-This module intentionally enforces local/private targets only to prevent abuse.
+"""
+Async Network Diagnostics Engine (Optimized)
+Enforces local/private targets only.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+# Maan ke chal rahe hain ki utils.py me ye function maujood hai
 from utils import is_private_or_loopback
 
 
@@ -25,8 +26,8 @@ class AttackStats:
 
     @property
     def elapsed(self) -> float:
-        if not self.running:
-            return 0.0
+        if not self.running or self.started_at == 0:
+            return 0.001
         return max(0.001, time.time() - self.started_at)
 
     @property
@@ -35,8 +36,7 @@ class AttackStats:
 
 
 class BufferPool:
-    """Reusable payload buffers for low allocation overhead."""
-
+    """Low-overhead payload management."""
     def __init__(self, size: int = 1200, count: int = 512) -> None:
         self._buffers = [os.urandom(size) for _ in range(count)]
         self._idx = 0
@@ -48,7 +48,7 @@ class BufferPool:
 
 
 class AttackEngine:
-    """High-concurrency diagnostics for user-owned systems."""
+    """High-performance diagnostics for private network systems."""
 
     def __init__(self, max_threads: int, max_duration: int) -> None:
         self.max_threads = max_threads
@@ -58,73 +58,77 @@ class AttackEngine:
         self._workers: list[asyncio.Task] = []
         self._buffer_pool = BufferPool()
 
-    def stop(self) -> None:
-        self._stop_event.set()
-
     async def run_udp_test(self, ip: str, port: int, duration: int) -> AttackStats:
         if not is_private_or_loopback(ip):
-            raise ValueError("Safety block: diagnostics are allowed only for local/private targets")
+            raise ValueError("Safety block: Local/Private targets only.")
 
         run_seconds = min(duration, self.max_duration)
-        worker_count = self.max_threads
-
         self.stats = AttackStats(started_at=time.time(), running=True)
         self._stop_event.clear()
 
-        loop = asyncio.get_running_loop()
-        for _ in range(worker_count):
-            task = asyncio.create_task(self._udp_worker(loop, ip, port))
+        # UDP Socket Setup (Non-blocking)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+
+        # Workers creation
+        for _ in range(self.max_threads):
+            task = asyncio.create_task(self._udp_worker(sock, ip, port))
             self._workers.append(task)
 
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=run_seconds)
-        except asyncio.TimeoutError:
-            pass
+            # Wait for the specified duration
+            await asyncio.sleep(run_seconds)
         finally:
             self._stop_event.set()
+            # Stop all workers and cleanup
+            for task in self._workers:
+                task.cancel()
+            
             await asyncio.gather(*self._workers, return_exceptions=True)
             self._workers.clear()
+            sock.close()
             self.stats.running = False
 
         return self.stats
 
-    async def _udp_worker(self, loop: asyncio.AbstractEventLoop, ip: str, port: int) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(False)
-
-        try:
-            while not self._stop_event.is_set():
-                payload = self._buffer_pool.next()
-                ok = await loop.run_in_executor(None, self._sendto, sock, payload, ip, port)
-                if ok:
-                    self.stats.sent_packets += 1
-                    self.stats.bytes_sent += len(payload)
-                else:
-                    self.stats.failed_packets += 1
-        finally:
-            sock.close()
-
-    @staticmethod
-    def _sendto(sock: socket.socket, payload: bytes, ip: str, port: int) -> bool:
-        try:
-            sock.sendto(payload, (ip, port))
-            return True
-        except OSError:
-            return False
+    async def _udp_worker(self, sock: socket.socket, ip: str, port: int) -> None:
+        loop = asyncio.get_running_loop()
+        while not self._stop_event.is_set():
+            payload = self._buffer_pool.next()
+            try:
+                # Direct non-blocking send
+                sock.sendto(payload, (ip, port))
+                self.stats.sent_packets += 1
+                self.stats.bytes_sent += len(payload)
+            except BlockingIOError:
+                # Buffer full, wait a tiny bit for the next event loop tick
+                await asyncio.sleep(0)
+            except OSError:
+                self.stats.failed_packets += 1
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                break
 
     async def run_tcp_probe(self, ip: str, port: int, attempts: int = 25) -> dict:
+        """Native async TCP connection testing."""
         if not is_private_or_loopback(ip):
-            raise ValueError("Safety block: TCP probe is allowed only for local/private targets")
+            raise ValueError("Safety block: Local/Private targets only.")
 
         success = 0
         for _ in range(attempts):
-            sock: Optional[socket.socket] = None
             try:
-                sock = socket.create_connection((ip, port), timeout=2)
+                # asyncio.open_connection is much faster and non-blocking
+                conn = asyncio.open_connection(ip, port)
+                reader, writer = await asyncio.wait_for(conn, timeout=1.5)
                 success += 1
-            except OSError:
-                pass
-            finally:
-                if sock:
-                    sock.close()
-        return {"attempts": attempts, "success": success, "failed": attempts - success}
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, asyncio.TimeoutError):
+                continue
+        
+        return {
+            "target": f"{ip}:{port}",
+            "attempts": attempts, 
+            "success": success, 
+            "failed": attempts - success
+        }
