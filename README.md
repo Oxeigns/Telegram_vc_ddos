@@ -55,7 +55,7 @@ python main.py
 
 ## Command Flow
 
-1. `/scan` → on-demand scan over top dialogs
+1. `/scan` → on-demand scan over top dialogs (configurable via `SCAN_LIMIT`)
 2. Select active VC from inline buttons
 3. Confirm join/extract (`✅ PROCEED` or `❌ CANCEL`)
 4. Metadata extraction executes with raw methods
@@ -68,7 +68,7 @@ python main.py
 ## Error Handling
 
 - `FloodWait` lockout is surfaced to admin with wait seconds
-- `ChatAdminRequired` is surfaced during join
+- `ChatAdminRequired` during join is handled gracefully: metadata extraction still continues for active VC
 - `UserAlreadyParticipant` is handled gracefully
 - All runtime logs are written to `bot.log`
 

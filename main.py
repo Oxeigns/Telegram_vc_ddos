@@ -46,7 +46,14 @@ async def run() -> int:
     await user.start()
 
     detector = VCDetector(user_client=user, scan_cooldown_seconds=cfg.scan_cooldown_seconds)
-    handler = BotHandler(bot=bot, detector=detector, engine=engine, admin_id=cfg.admin_id, max_duration=cfg.max_duration)
+    handler = BotHandler(
+        bot=bot,
+        detector=detector,
+        engine=engine,
+        admin_id=cfg.admin_id,
+        max_duration=cfg.max_duration,
+        scan_limit=cfg.scan_limit,
+    )
     handler.register_diag_command()
 
     if cfg.admin_id is not None:

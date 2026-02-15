@@ -67,7 +67,10 @@ class VCDetector:
         return None
 
     async def join_and_extract_metadata(self, record: VCRecord) -> dict:
-        """Join VC, fetch transport metadata, and return extracted endpoint candidates."""
+        """Join active VC when possible, then fetch transport metadata."""
+        joined = False
+        notice: Optional[str] = None
+
         try:
             await self.user_client.invoke(
                 functions.phone.JoinGroupCall(
@@ -79,10 +82,14 @@ class VCDetector:
                     invite_hash=None,
                 )
             )
+            joined = True
+            LOGGER.info("Joined active VC in %s", record.title)
         except UserAlreadyParticipant:
+            joined = True
             LOGGER.info("Already joined in %s", record.title)
         except ChatAdminRequired as exc:
-            raise RuntimeError(f"ChatAdminRequired: {exc}") from exc
+            notice = "Join blocked by Telegram admin restriction; fetched VC metadata without joining."
+            LOGGER.warning("Join blocked by admin requirement in %s: %s", record.title, exc)
 
         group_call = await self.user_client.invoke(
             functions.phone.GetGroupCall(
@@ -106,6 +113,8 @@ class VCDetector:
             "call_id": record.call.id,
             "params": parsed,
             "endpoint_candidates": candidates,
+            "joined": joined,
+            "notice": notice,
         }
 
     async def leave_call(self, record: VCRecord) -> None:
