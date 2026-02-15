@@ -39,13 +39,13 @@ API_ID=1234567
 API_HASH=your_api_hash
 BOT_TOKEN=123456:ABC-DEF...
 SESSION_STRING=your_pyrogram_session_string
-ADMIN_ID=123456789  # optional but strongly recommended
+ADMIN_ID=123456789  # optional (used only for startup notification target)
 MAX_DURATION=600
 MAX_THREADS=100
 SCAN_LIMIT=50
 ```
 
-`ADMIN_ID` is strongly recommended. If omitted, command handlers fall back to private-chat access instead of a single fixed admin.
+`ADMIN_ID` is optional and is only used as the startup notification chat target.
 
 ## Run
 
@@ -67,7 +67,7 @@ python main.py
 
 ## Error Handling
 
-- `FloodWait` lockout is surfaced to admin with wait seconds
+- `FloodWait` lockout is surfaced in bot replies with wait seconds
 - `ChatAdminRequired` during join is handled gracefully: metadata extraction still continues for active VC
 - `UserAlreadyParticipant` is handled gracefully
 - All runtime logs are written to `bot.log`
