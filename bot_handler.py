@@ -15,7 +15,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from attack_engine import AttackEngine
 from utils import human_bytes, is_valid_port, is_private_or_loopback
-from vc_detector_fixed import VCDetector, VCRecord
+from vc_detector import VCDetector, VCRecord
 
 LOGGER = logging.getLogger(__name__)
 
