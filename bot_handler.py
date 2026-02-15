@@ -39,7 +39,7 @@ class SessionContext:
 
 
 class BotHandler:
-    def __init__(self, bot: Client, detector: VCDetector, engine: AttackEngine, admin_id: int, max_duration: int) -> None:
+    def __init__(self, bot: Client, detector: VCDetector, engine: AttackEngine, admin_id: Optional[int], max_duration: int) -> None:
         self.bot = bot
         self.detector = detector
         self.engine = engine
@@ -47,9 +47,10 @@ class BotHandler:
         self.max_duration = max_duration
         self.ctx = SessionContext()
 
-        self.bot.add_handler(MessageHandler(self.on_scan, filters.command("scan") & filters.user(admin_id)))
-        self.bot.add_handler(MessageHandler(self.on_stop, filters.command("stop") & filters.user(admin_id)))
-        self.bot.add_handler(CallbackQueryHandler(self.on_callback, filters.user(admin_id)))
+        user_filter = filters.user(admin_id) if admin_id is not None else filters.private
+        self.bot.add_handler(MessageHandler(self.on_scan, filters.command("scan") & user_filter))
+        self.bot.add_handler(MessageHandler(self.on_stop, filters.command("stop") & user_filter))
+        self.bot.add_handler(CallbackQueryHandler(self.on_callback, user_filter))
 
     async def on_scan(self, client: Client, message):
         self.ctx.state = BotState.SCANNING
@@ -130,7 +131,8 @@ class BotHandler:
             await callback_query.answer()
 
     def register_diag_command(self):
-        self.bot.add_handler(MessageHandler(self.on_diag, filters.command("diag") & filters.user(self.admin_id)))
+        user_filter = filters.user(self.admin_id) if self.admin_id is not None else filters.private
+        self.bot.add_handler(MessageHandler(self.on_diag, filters.command("diag") & user_filter))
 
     async def on_diag(self, client: Client, message):
         args = message.text.split()
