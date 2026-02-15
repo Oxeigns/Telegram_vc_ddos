@@ -6,7 +6,7 @@ import asyncio
 import logging
 import sys
 
-from pyrogram import Client, idle
+from pyrogram import Client, enums, idle
 
 from attack_engine import AttackEngine
 from bot_handler import BotHandler
@@ -122,7 +122,7 @@ async def run() -> int:
     
     if cfg.admin_id is not None:
         try:
-            await bot.send_message(cfg.admin_id, startup_msg, parse_mode="html")
+            await bot.send_message(cfg.admin_id, startup_msg, parse_mode=enums.ParseMode.HTML)
             LOGGER.info(f"Startup notification sent to admin {cfg.admin_id}")
         except Exception as e:
             LOGGER.warning(f"Failed to notify admin: {e}")
