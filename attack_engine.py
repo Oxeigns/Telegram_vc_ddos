@@ -58,6 +58,12 @@ class AttackEngine:
         self._workers: list[asyncio.Task] = []
         self._buffer_pool = BufferPool()
 
+    def stop(self) -> None:
+        """Request a graceful stop for any running diagnostics job."""
+        self._stop_event.set()
+        for task in self._workers:
+            task.cancel()
+
     async def run_udp_test(self, ip: str, port: int, duration: int) -> AttackStats:
         if not is_private_or_loopback(ip):
             raise ValueError("Safety block: Local/Private targets only.")
@@ -76,8 +82,11 @@ class AttackEngine:
             self._workers.append(task)
 
         try:
-            # Wait for the specified duration
-            await asyncio.sleep(run_seconds)
+            # Run until timeout or until an external stop signal is received.
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=run_seconds)
+            except asyncio.TimeoutError:
+                pass
         finally:
             self._stop_event.set()
             # Stop all workers and cleanup
