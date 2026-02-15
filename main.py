@@ -60,7 +60,7 @@ async def run() -> int:
         api_id=cfg.api_id,
         api_hash=cfg.api_hash,
         bot_token=cfg.bot_token,
-        workdir="sessions"
+        workdir="/tmp"
     )
     
     user = Client(
@@ -68,7 +68,7 @@ async def run() -> int:
         api_id=cfg.api_id,
         api_hash=cfg.api_hash,
         session_string=cfg.session_string,
-        workdir="sessions"
+        workdir="/tmp"
     )
 
     # Initialize engine with safety check enabled by default
