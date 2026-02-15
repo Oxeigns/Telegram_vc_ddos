@@ -45,8 +45,6 @@ async def run() -> int:
         print("- API_HASH")
         print("- BOT_TOKEN")
         print("- SESSION_STRING")
-        print("\nOptional:")
-        print("- ADMIN_ID (restricts access to this user)")
         return 1
 
     setup_logging(cfg.log_file)
@@ -101,7 +99,7 @@ async def run() -> int:
     )
     handler.register_handlers()
 
-    # Notify admin
+    # Send startup notice
     startup_msg = (
         "✅ <b>VC Monitor Bot - Fixed Version</b> is online!\n\n"
         "<b>Available Commands:</b>\n"
@@ -117,14 +115,12 @@ async def run() -> int:
         "<i>Authorized Testing Environment</i>"
     )
     
-    if cfg.admin_id is not None:
-        try:
-            await bot.send_message(cfg.admin_id, startup_msg, parse_mode=enums.ParseMode.HTML)
-            LOGGER.info(f"Startup notification sent to admin {cfg.admin_id}")
-        except Exception as e:
-            LOGGER.warning(f"Failed to notify admin: {e}")
-    else:
-        LOGGER.warning("ADMIN_ID not set - bot is open to all users!")
+    try:
+        target_chat = cfg.admin_id if cfg.admin_id is not None else "me"
+        await bot.send_message(target_chat, startup_msg, parse_mode=enums.ParseMode.HTML)
+        LOGGER.info("Startup notification sent")
+    except Exception as e:
+        LOGGER.warning(f"Failed to send startup notification: {e}")
 
     # Run until stopped
     LOGGER.info("Bot is running. Press Ctrl+C to stop.")

