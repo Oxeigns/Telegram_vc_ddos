@@ -59,16 +59,14 @@ async def run() -> int:
         "vc_monitor_bot_fixed",
         api_id=cfg.api_id,
         api_hash=cfg.api_hash,
-        bot_token=cfg.bot_token,
-        workdir="/tmp"
+        bot_token=cfg.bot_token
     )
     
     user = Client(
         "vc_monitor_user_fixed",
         api_id=cfg.api_id,
         api_hash=cfg.api_hash,
-        session_string=cfg.session_string,
-        workdir="/tmp"
+        session_string=cfg.session_string
     )
 
     # Initialize engine with safety check enabled by default
