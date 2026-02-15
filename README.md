@@ -39,11 +39,13 @@ API_ID=1234567
 API_HASH=your_api_hash
 BOT_TOKEN=123456:ABC-DEF...
 SESSION_STRING=your_pyrogram_session_string
-ADMIN_ID=123456789
+ADMIN_ID=123456789  # optional but strongly recommended
 MAX_DURATION=600
 MAX_THREADS=100
 SCAN_LIMIT=50
 ```
+
+`ADMIN_ID` is strongly recommended. If omitted, command handlers fall back to private-chat access instead of a single fixed admin.
 
 ## Run
 

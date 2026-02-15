@@ -49,7 +49,10 @@ async def run() -> int:
     handler = BotHandler(bot=bot, detector=detector, engine=engine, admin_id=cfg.admin_id, max_duration=cfg.max_duration)
     handler.register_diag_command()
 
-    await bot.send_message(cfg.admin_id, "✅ VC monitor is online. Use /scan to begin on-demand checks.")
+    if cfg.admin_id is not None:
+        await bot.send_message(cfg.admin_id, "✅ VC monitor is online. Use /scan to begin on-demand checks.")
+    else:
+        logging.warning("ADMIN_ID is not set. Restrict bot access by setting ADMIN_ID in the environment.")
 
     try:
         await idle()

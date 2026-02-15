@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -18,7 +19,7 @@ class Config:
     api_hash: str
     bot_token: str
     session_string: str
-    admin_id: int
+    admin_id: Optional[int]
     max_duration: int = 600
     max_threads: int = 100
     scan_limit: int = 50
@@ -32,7 +33,6 @@ class Config:
             "API_HASH": os.getenv("API_HASH"),
             "BOT_TOKEN": os.getenv("BOT_TOKEN"),
             "SESSION_STRING": os.getenv("SESSION_STRING"),
-            "ADMIN_ID": os.getenv("ADMIN_ID"),
         }
 
         missing = [key for key, value in required.items() if not value]
@@ -48,7 +48,7 @@ class Config:
             api_hash=str(required["API_HASH"]),
             bot_token=str(required["BOT_TOKEN"]),
             session_string=str(required["SESSION_STRING"]),
-            admin_id=int(required["ADMIN_ID"]),
+            admin_id=int(os.getenv("ADMIN_ID")) if os.getenv("ADMIN_ID") else None,
             max_duration=max_duration,
             max_threads=max_threads,
             scan_limit=scan_limit,
