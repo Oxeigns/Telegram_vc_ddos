@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, List, Dict, Set, Tuple
 
 from pyrogram import Client
-from pyrogram.errors import ChatAdminRequired, FloodWait, UserAlreadyParticipant
+from pyrogram.errors import BadRequest, ChatAdminRequired, FloodWait, UserAlreadyParticipant
 from pyrogram.raw import functions, types
 
 LOGGER = logging.getLogger(__name__)
@@ -119,6 +119,13 @@ class VCDetector:
         except ChatAdminRequired as exc:
             notice = "Join blocked by Telegram admin restriction; fetched metadata without joining."
             LOGGER.warning("Admin restriction in %s: %s", record.title, exc)
+        except BadRequest as exc:
+            if "CHAT_ADMIN_REQUIRED" in str(exc):
+                notice = "Join blocked by Telegram admin restriction; fetched metadata without joining."
+                LOGGER.warning("Admin restriction in %s: %s", record.title, exc)
+            else:
+                LOGGER.warning("Join attempt failed: %s", exc)
+                notice = f"Join failed: {exc}"
         except Exception as exc:
             LOGGER.warning("Join attempt failed: %s", exc)
             notice = f"Join failed: {exc}"
