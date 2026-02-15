@@ -1,152 +1,114 @@
+"""On-demand Telegram voice chat detector using raw API methods."""
+
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
-from typing import Optional, Tuple
+import time
 from dataclasses import dataclass
+from typing import Any, Optional
 
-from pyrogram import Client, raw
-from pyrogram.errors import (
-    UserAlreadyParticipant,
-    FloodWait
-)
+from pyrogram import Client
+from pyrogram.errors import ChatAdminRequired, FloodWait, UserAlreadyParticipant
+from pyrogram.raw import functions, types
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class VCInfo:
-    chat_id: int
-    chat_title: str
-    participants_count: int = 0
-    is_active: bool = False
-    call_id: Optional[int] = None
-    chat_username: Optional[str] = None
+class VCRecord:
+    dialog_id: int
+    title: str
+    peer: Any
+    call: Any
 
 
-class VoiceChatDetector:
-
-    def __init__(self, user_client: Client, admin_id: int, check_interval: int = 15):
+class VCDetector:
+    def __init__(self, user_client: Client, scan_cooldown_seconds: int = 10) -> None:
         self.user_client = user_client
-        self.admin_id = admin_id
-        self.check_interval = check_interval
-        self._running = False
-        self._last_detected_id = None
+        self.scan_cooldown_seconds = scan_cooldown_seconds
+        self._last_scan = 0.0
 
-    # -------------------------
-    # SAFE VC FETCH
-    # -------------------------
+    async def scan_active_voice_chats(self, limit: int = 50) -> list[VCRecord]:
+        now = time.time()
+        if now - self._last_scan < self.scan_cooldown_seconds:
+            await asyncio.sleep(self.scan_cooldown_seconds - (now - self._last_scan))
 
-    async def _fetch_vc_info(self, chat_id: int) -> Optional[VCInfo]:
-        try:
-            peer = await self.user_client.resolve_peer(chat_id)
+        self._last_scan = time.time()
+        results: list[VCRecord] = []
 
-            # CHANNEL / SUPERGROUP
-            if isinstance(peer, raw.types.InputPeerChannel):
-                full_chat = await self.user_client.invoke(
-                    raw.functions.channels.GetFullChannel(channel=peer)
-                )
-                chat_obj = full_chat.chats[0]
-                full = full_chat.full_chat
-            else:
-                full_chat = await self.user_client.invoke(
-                    raw.functions.messages.GetFullChat(chat_id=chat_id)
-                )
-                chat_obj = full_chat.chats[0]
-                full = full_chat.full_chat
+        async for dialog in self.user_client.get_dialogs(limit=limit):
+            chat = dialog.chat
+            try:
+                peer = await self.user_client.resolve_peer(chat.id)
+                call = await self._extract_call(peer)
+                if call:
+                    results.append(VCRecord(dialog_id=chat.id, title=chat.title or str(chat.id), peer=peer, call=call))
+            except FloodWait as wait_err:
+                LOGGER.warning("FloodWait during scan: %s", wait_err.value)
+                raise
+            except Exception as exc:  # best-effort scan
+                LOGGER.debug("Skipping dialog %s: %s", chat.id, exc)
 
-            # No active call
-            if not getattr(full, "call", None):
-                return None
+        return results
 
-            call = full.call
-
-            # 🔥 FIX HERE
-            call_data = await self.user_client.invoke(
-                raw.functions.phone.GetGroupCall(
-                    call=call,
-                    limit=1
-                )
+    async def _extract_call(self, peer: Any) -> Optional[Any]:
+        if isinstance(peer, types.InputPeerChannel):
+            full = await self.user_client.invoke(
+                functions.channels.GetFullChannel(channel=types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash))
             )
+            return getattr(full.full_chat, "call", None)
 
-            # call_data itself IS GroupCall
-            if not getattr(call_data, "term_date", None):
-
-                return VCInfo(
-                    chat_id=chat_obj.id,
-                    chat_title=chat_obj.title,
-                    chat_username=getattr(chat_obj, "username", None),
-                    participants_count=getattr(call_data, "participants_count", 0),
-                    is_active=True,
-                    call_id=call.id
-                )
-
-        except Exception as e:
-            logger.error(f"VC fetch error: {e}")
+        if isinstance(peer, types.InputPeerChat):
+            full = await self.user_client.invoke(functions.messages.GetFullChat(chat_id=peer.chat_id))
+            return getattr(full.full_chat, "call", None)
 
         return None
 
-    # -------------------------
-    # MANUAL INVITE CHECK
-    # -------------------------
-
-    async def process_invite_link(self, invite_link: str) -> Optional[Tuple[int, str, VCInfo]]:
+    async def join_and_extract_metadata(self, record: VCRecord) -> dict:
+        """Join VC, fetch transport metadata, and return extracted endpoint candidates."""
         try:
-            try:
-                chat = await self.user_client.join_chat(invite_link)
-            except UserAlreadyParticipant:
-                chat = await self.user_client.get_chat(invite_link)
-
-            await asyncio.sleep(2)
-
-            vc_info = await self._fetch_vc_info(chat.id)
-
-            if not vc_info:
-                vc_info = VCInfo(
-                    chat_id=chat.id,
-                    chat_title=chat.title,
-                    is_active=False
+            await self.user_client.invoke(
+                functions.phone.JoinGroupCall(
+                    call=types.InputGroupCall(id=record.call.id, access_hash=record.call.access_hash),
+                    join_as=record.peer,
+                    params=types.DataJSON(data=json.dumps({"ufrag": "", "pwd": ""})),
+                    muted=True,
+                    video_stopped=True,
+                    invite_hash=None,
                 )
+            )
+        except UserAlreadyParticipant:
+            LOGGER.info("Already joined in %s", record.title)
+        except ChatAdminRequired as exc:
+            raise RuntimeError(f"ChatAdminRequired: {exc}") from exc
 
-            return chat.id, chat.title, vc_info
+        group_call = await self.user_client.invoke(
+            functions.phone.GetGroupCall(
+                call=types.InputGroupCall(id=record.call.id, access_hash=record.call.access_hash),
+                limit=1,
+            )
+        )
 
-        except Exception as e:
-            logger.error(f"Manual process error: {e}")
-            return None
+        call = group_call.call
+        params_raw = getattr(call, "params", None)
+        params_data = getattr(params_raw, "data", "{}") if params_raw else "{}"
 
-    # -------------------------
-    # AUTO MONITOR LOOP
-    # -------------------------
+        try:
+            parsed = json.loads(params_data)
+        except json.JSONDecodeError:
+            parsed = {"raw": params_data}
 
-    async def monitor_loop(self, callback):
-        self._running = True
-        logger.info("🟢 VC Auto Detection Started")
+        candidates = parsed.get("endpoints", []) if isinstance(parsed, dict) else []
+        return {
+            "title": record.title,
+            "call_id": record.call.id,
+            "params": parsed,
+            "endpoint_candidates": candidates,
+        }
 
-        while self._running:
-            try:
-                async for dialog in self.user_client.get_dialogs(limit=30):
-
-                    if not self._running:
-                        break
-
-                    if dialog.chat.type.value in ["group", "supergroup", "channel"]:
-
-                        vc = await self._fetch_vc_info(dialog.chat.id)
-
-                        if vc and vc.is_active:
-
-                            if self._last_detected_id != vc.call_id:
-                                self._last_detected_id = vc.call_id
-                                logger.info(f"🔥 VC Detected: {vc.chat_title}")
-                                await callback(vc)
-                                break
-
-                await asyncio.sleep(self.check_interval)
-
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-
-            except Exception as e:
-                logger.error(f"Monitor loop error: {e}")
-                await asyncio.sleep(10)
-
-    def stop(self):
-        self._running = False
+    async def leave_call(self, record: VCRecord) -> None:
+        await self.user_client.invoke(
+            functions.phone.LeaveGroupCall(call=types.InputGroupCall(id=record.call.id, access_hash=record.call.access_hash), source=0)
+        )

@@ -1,57 +1,55 @@
-"""
-Configuration - Termux Optimized
-"""
+"""Application configuration and environment validation."""
+
+from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
+@dataclass(frozen=True)
 class Config:
-    """Bot Configuration - Auto loads from .env"""
-    
-    # Telegram Bot
-    API_ID: int = int(os.environ.get("API_ID", 35335474))
-    API_HASH: str = os.environ.get("API_HASH", "65c9d8d32a75ba9af8cc401d940b5957")
-    BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
-    
-    # Admin
-    ADMIN_USER_ID: int = int(os.environ.get("ADMIN_USER_ID", 7440486652))
-    
-    # Attack Settings
-    MAX_REQUESTS: int = int(os.environ.get("MAX_REQUESTS", 100000))
-    THREAD_COUNT: int = int(os.environ.get("THREAD_COUNT", 100))
-    ATTACK_TIMEOUT: int = int(os.environ.get("ATTACK_TIMEOUT", 300))
-    
-    # Bot Settings
-    LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
-    
+    """Immutable runtime settings."""
+
+    api_id: int
+    api_hash: str
+    bot_token: str
+    session_string: str
+    admin_id: int
+    max_duration: int = 600
+    max_threads: int = 100
+    scan_limit: int = 50
+    scan_cooldown_seconds: int = 10
+    log_file: str = "bot.log"
+
     @classmethod
-    def validate(cls) -> bool:
-        """Validate configuration"""
-        errors = []
-        
-        if not cls.API_ID or cls.API_ID == 0:
-            errors.append("API_ID missing")
-        if not cls.API_HASH:
-            errors.append("API_HASH missing")
-        if not cls.BOT_TOKEN:
-            errors.append("BOT_TOKEN missing")
-        if not cls.ADMIN_USER_ID or cls.ADMIN_USER_ID == 0:
-            errors.append("ADMIN_USER_ID missing")
-        
-        if errors:
-            print(f"[ERROR] Missing: {', '.join(errors)}")
-            print("[INFO] Create .env file with your credentials")
-            return False
-        
-        print(f"[CONFIG] ✓ Admin: {cls.ADMIN_USER_ID}")
-        print(f"[CONFIG] ✓ Threads: {cls.THREAD_COUNT}")
-        print(f"[CONFIG] ✓ Max Requests: {cls.MAX_REQUESTS:,}")
-        return True
+    def from_env(cls) -> "Config":
+        required = {
+            "API_ID": os.getenv("API_ID"),
+            "API_HASH": os.getenv("API_HASH"),
+            "BOT_TOKEN": os.getenv("BOT_TOKEN"),
+            "SESSION_STRING": os.getenv("SESSION_STRING"),
+            "ADMIN_ID": os.getenv("ADMIN_ID"),
+        }
 
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-# Attack Methods Info
-ATTACK_METHODS = {
-    "udp": {"name": "UDP Flood", "description": "High-volume UDP packets"},
-    "tcp": {"name": "TCP SYN", "description": "TCP connection flood"},
-    "http": {"name": "HTTP Flood", "description": "HTTP GET flood"},
-}
+        max_duration = min(int(os.getenv("MAX_DURATION", "600")), 600)
+        max_threads = min(int(os.getenv("MAX_THREADS", "100")), 100)
+        scan_limit = max(1, min(int(os.getenv("SCAN_LIMIT", "50")), 50))
+
+        return cls(
+            api_id=int(required["API_ID"]),
+            api_hash=str(required["API_HASH"]),
+            bot_token=str(required["BOT_TOKEN"]),
+            session_string=str(required["SESSION_STRING"]),
+            admin_id=int(required["ADMIN_ID"]),
+            max_duration=max_duration,
+            max_threads=max_threads,
+            scan_limit=scan_limit,
+        )

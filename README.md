@@ -1,114 +1,76 @@
-# VC Monitor Bot
+# Telegram VC Monitor + Safe Network Diagnostics (Termux)
 
-Production-grade Telegram bot for Voice Chat monitoring and network testing.
+> This project is designed for **defensive monitoring and diagnostics only**. It does **not** support public-target DDoS behavior. UDP/TCP diagnostics are restricted to private/loopback/reserved ranges.
 
-## Features
+## What this rewrite provides
 
-- 🔍 **Automatic Voice Chat Detection**: Monitors your Voice Chat activity
-- ⚡ **High-Performance Attack Engine**: Multi-threaded request generation
-- 🔒 **Fixed Configuration**: Immutable request/thread limits (owner-only)
-- 📊 **Real-time Statistics**: Live attack progress and completion reports
-- ✅ **Manual Approval**: Owner must confirm before any action
-- 🤖 **Dual Client Architecture**: User client for detection + Bot for control
+- Dual-client architecture (Bot + User session)
+- On-demand VC scan (`/scan`) only (no background scraping)
+- Inline group selection and manual approval flow
+- VC join + raw metadata extraction + clean leave
+- Async diagnostics engine (`asyncio` + `run_in_executor`) with buffer pooling
+- Live progress dashboard updates every 5 seconds
+- Global stop and structured logging to `bot.log`
 
-## Architecture
+## File Layout
 
-```
-main.py           - Entry point & lifecycle management
-config.py         - Environment-based configuration
-attack_engine.py  - Multi-threaded attack implementation
-vc_detector.py    - Voice Chat monitoring
-bot_handler.py    - Telegram UI/handlers
-utils.py          - Helper functions
-```
+- `main.py` — dual-client bootstrap and lifecycle
+- `config.py` — dotenv config loading and validation
+- `vc_detector.py` — raw API voice chat detection and metadata extraction
+- `attack_engine.py` — async diagnostics engine (safe target guardrails)
+- `bot_handler.py` — state machine and Telegram interaction layer
+- `utils.py` — helpers (bytes formatter, resolver, IP safety checks)
 
-## Deployment
-
-### 1. Generate Session String (Local)
+## Termux Setup
 
 ```bash
-pip install pyrogram tgcrypto
-python3 << 'EOF'
-from pyrogram import Client
-
-API_ID = 1234567  # Your API ID
-API_HASH = "your_api_hash"
-
-with Client("session", api_id=API_ID, api_hash=API_HASH) as app:
-    session = app.export_session_string()
-    print(f"\nYour Session String:\n{session}\n")
-EOF
+pkg update -y && pkg upgrade -y
+pkg install -y python rust clang libffi openssl
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip wheel
+pip install -r requirements.txt
 ```
 
-### 2. Heroku Deploy
+## .env Example
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Oxeigns/Telegram_vc_ddos/tree/main)
+```env
+API_ID=1234567
+API_HASH=your_api_hash
+BOT_TOKEN=123456:ABC-DEF...
+SESSION_STRING=your_pyrogram_session_string
+ADMIN_ID=123456789
+MAX_DURATION=600
+MAX_THREADS=100
+SCAN_LIMIT=50
+```
 
-**Or manual:**
+## Run
 
 ```bash
-heroku create your-vc-bot
-heroku config:set API_ID=1234567
-heroku config:set API_HASH=your_hash
-heroku config:set SESSION_STRING="your_long_session_string"
-heroku config:set BOT_TOKEN="your_bot_token"
-heroku config:set ADMIN_USER_ID=123456789
-heroku config:set MAX_REQUESTS=100000
-heroku config:set THREAD_COUNT=50
-heroku config:set ATTACK_TIMEOUT=300
-
-git push heroku main
-heroku ps:scale worker=1
+python main.py
 ```
 
-## Configuration
+## Command Flow
 
-All settings via environment variables (immutable in deployment):
+1. `/scan` → on-demand scan over top dialogs
+2. Select active VC from inline buttons
+3. Confirm join/extract (`✅ PROCEED` or `❌ CANCEL`)
+4. Metadata extraction executes with raw methods
+5. Optional diagnostics command:
+   - `/diag <ip> <port> <duration>`
+   - only private/loopback/reserved targets are permitted
+6. `Leave VC` inline action performs clean exit
+7. `/stop` triggers global stop for active diagnostic tasks
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `API_ID` | Telegram API ID | Required |
-| `API_HASH` | Telegram API Hash | Required |
-| `SESSION_STRING` | Pyrogram session | Required |
-| `BOT_TOKEN` | BotFather token | Required |
-| `ADMIN_USER_ID` | Your user ID | Required |
-| `MAX_REQUESTS` | Fixed request limit | 100000 |
-| `THREAD_COUNT` | Attack threads | 50 |
-| `ATTACK_TIMEOUT` | Max duration (sec) | 300 |
+## Error Handling
 
-## Commands
+- `FloodWait` lockout is surfaced to admin with wait seconds
+- `ChatAdminRequired` is surfaced during join
+- `UserAlreadyParticipant` is handled gracefully
+- All runtime logs are written to `bot.log`
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Show main menu & status |
-| `/status` | Check attack progress |
-| `/stop` | Halt active attack |
+## Notes
 
-## Usage Flow
-
-1. **Bot starts** → Sends startup notification to admin
-2. **Admin joins Voice Chat** → Bot detects and notifies
-3. **Confirmation prompt** → "Attack this IP? YES/NO"
-4. **Click YES** → Attack starts with fixed MAX_REQUESTS
-5. **Real-time updates** → Progress every 10 seconds
-6. **Completion** → Final statistics sent
-
-## Security
-
-- ✅ Owner verification on all actions
-- ✅ Manual approval required for attacks
-- ✅ Fixed limits (immutable by users)
-- ✅ No hardcoded credentials
-- ✅ Session string authentication
-- ✅ Daemon threads with cleanup
-
-## Logs
-
-View logs:
-```bash
-heroku logs --tail
-```
-
-## License
-
-For authorized security testing only. Ensure compliance with local laws and platform ToS.
+- Keep this tool compliant with local laws and Telegram Terms.
+- Do not run diagnostics against systems you do not own or explicitly control.

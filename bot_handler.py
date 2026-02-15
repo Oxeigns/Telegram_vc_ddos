@@ -1,443 +1,185 @@
-"""
-Bot Handler for Termux - Clean IP Attack Only
-"""
+"""Telegram bot controller and state machine."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
-import random
-from typing import Dict, Any
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import FloodWait
+from pyrogram.handlers import CallbackQueryHandler, MessageHandler
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-try:
-    from pyrogram.enums import ParseMode
-    HTML = ParseMode.HTML
-except ImportError:
-    HTML = "HTML"
+from attack_engine import AttackEngine
+from utils import human_bytes, is_valid_port
+from vc_detector import VCDetector, VCRecord
 
-from config import Config, ATTACK_METHODS
-from utils import is_valid_ip, parse_ip_port, format_number
+LOGGER = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
 
-# User states
-states: Dict[int, Dict] = {}
-# Status messages for live updates
-status_messages: Dict[int, Any] = {}
+class BotState(str, Enum):
+    IDLE = "IDLE"
+    SCANNING = "SCANNING"
+    SELECTION = "SELECTION"
+    JOINING = "JOINING"
+    READY = "READY"
+    ATTACKING = "ATTACKING"
+
+
+@dataclass
+class SessionContext:
+    state: BotState = BotState.IDLE
+    active_records: list[VCRecord] = field(default_factory=list)
+    selected_record: Optional[VCRecord] = None
+    extracted_metadata: Optional[dict] = None
+    progress_task: Optional[asyncio.Task] = None
 
 
 class BotHandler:
-    """Clean Control Panel - Direct IP Attack Only"""
-    
-    def __init__(self, bot: Client, attack_engine, admin_id: int):
+    def __init__(self, bot: Client, detector: VCDetector, engine: AttackEngine, admin_id: int, max_duration: int) -> None:
         self.bot = bot
-        self.engine = attack_engine
+        self.detector = detector
+        self.engine = engine
         self.admin_id = admin_id
-        self.logger = logging.getLogger(__name__)
-        self._register_handlers()
-    
-    def register_handlers(self):
-        """Public method for compatibility"""
-        pass
-    
-    def _register_handlers(self):
-        
-        @self.bot.on_message(filters.command("start") & filters.private)
-        async def start_cmd(client, message):
-            if message.from_user.id != self.admin_id:
-                await message.reply_text("⛔ <b>Unauthorized</b>", parse_mode=HTML)
-                return
-            
-            states.pop(message.from_user.id, None)
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Start Test", callback_data="start_test")],
-                [InlineKeyboardButton("📊 Status", callback_data="show_status"),
-                 InlineKeyboardButton("🛑 Stop", callback_data="stop_test")],
-                [InlineKeyboardButton("⚙️ Settings", callback_data="show_settings")]
-            ])
-            
-            text = (
-                "╔════════════════════════╗\n"
-                "║   🤖 <b>CONTROL PANEL</b>   ║\n"
-                "╚════════════════════════╝\n\n"
-                "<b>System:</b> <code>ONLINE</code> ✅\n"
-                "<b>Platform:</b> <code>Termux</code> 📱\n"
-                f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n"
-                f"<b>Max Requests:</b> <code>{format_number(Config.MAX_REQUESTS)}</code>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "<b>Select an option:</b>"
-            )
-            
-            await message.reply_text(text, reply_markup=keyboard, parse_mode=HTML)
-        
-        
-        @self.bot.on_callback_query(filters.regex("^start_test$"))
-        async def start_test_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            states[callback.from_user.id] = {'step': 'waiting_ip'}
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-            ])
-            
-            await callback.edit_message_text(
-                "🚀 <b>START NETWORK TEST</b>\n\n"
-                "<b>Auto-Detection Enabled</b>\n\n"
-                "Send target in format:\n"
-                "<code>IP:PORT</code>\n\n"
-                "<b>Examples:</b>\n"
-                "• <code>192.168.1.1:80</code> → HTTP\n"
-                "• <code>10.0.0.1:22</code> → TCP\n"
-                "• <code>127.0.0.1:53</code> → UDP\n\n"
-                "Or manually specify:\n"
-                "<code>IP:PORT:METHOD</code>\n"
-                "• <code>1.1.1.1:80:udp</code>",
-                reply_markup=keyboard,
-                parse_mode=HTML
-            )
-        
-        
-        @self.bot.on_callback_query(filters.regex("^show_status$"))
-        async def status_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            stats = self.engine.get_status()
-            
-            if stats['running']:
-                progress = min(100, (stats['progress'] / max(stats['max'], 1)) * 100)
-                bar = "█" * int(progress / 10) + "░" * (10 - int(progress / 10))
-                
-                method_emoji = {
-                    'UDP': '🔥',
-                    'TCP': '⚡',
-                    'HTTP': '🌐'
-                }.get(stats['method'], '⚡')
-                
-                text = (
-                    f"{method_emoji} <b>LIVE STATUS</b> {method_emoji}\n\n"
-                    f"<b>Target:</b> <code>{stats['target']}:{stats['port']}</code>\n"
-                    f"<b>Method:</b> <code>{stats['method']}</code>\n"
-                    f"<b>Progress:</b> <code>[{bar}] {progress:.1f}%</code>\n"
-                    f"<b>Requests:</b> <code>{format_number(stats['progress'])}/{format_number(stats['max'])}</code>\n"
-                    f"<b>Success:</b> <code>{format_number(stats['successful'])}</code> ✅\n"
-                    f"<b>Failed:</b> <code>{format_number(stats['failed'])}</code> ❌\n"
-                    f"<b>RPS:</b> <code>{stats['rps']:.2f}</code> req/s\n"
-                    f"<b>Time:</b> <code>{stats['duration']:.1f}s</code>\n\n"
-                    "<i>Auto-updating every 3 seconds...</i>"
-                )
-            else:
-                text = (
-                    "📊 <b>SYSTEM STATUS</b>\n\n"
-                    "<b>State:</b> <code>IDLE</code> ⚪\n"
-                    "No active test running.\n\n"
-                    "Click <b>🚀 Start Test</b> to begin"
-                )
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh", callback_data="show_status"),
-                 InlineKeyboardButton("🛑 Stop", callback_data="stop_test")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
-            ])
-            
-            await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
-            
-            # Start live updates if running
-            if stats['running'] and callback.from_user.id not in status_messages:
-                status_messages[callback.from_user.id] = callback.message
-                asyncio.create_task(self._live_status_updater(callback.from_user.id, callback.message))
-        
-        
-        @self.bot.on_callback_query(filters.regex("^stop_test$"))
-        async def stop_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            if not self.engine.stats.is_running:
-                await callback.answer("No active test!", show_alert=True)
-                return
-            
-            status_messages.pop(callback.from_user.id, None)
-            stats = self.engine.stop_attack()
-            states.pop(callback.from_user.id, None)
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
-            ])
-            
-            text = (
-                "🛑 <b>TEST STOPPED</b>\n\n"
-                "<b>Final Results:</b>\n"
-                f"├ Total: <code>{format_number(stats['total'])}</code>\n"
-                f"├ Success: <code>{format_number(stats['successful'])}</code>\n"
-                f"├ Failed: <code>{format_number(stats['failed'])}</code>\n"
-                f"├ Duration: <code>{stats['duration']:.2f}s</code>\n"
-                f"└ RPS: <code>{stats['rps']:.2f}</code>"
-            )
-            
-            await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
-        
-        
-        @self.bot.on_callback_query(filters.regex("^show_settings$"))
-        async def settings_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
-            ])
-            
-            text = (
-                "⚙️ <b>SETTINGS</b>\n\n"
-                "<b>Configuration:</b>\n"
-                f"├ Max Requests: <code>{format_number(Config.MAX_REQUESTS)}</code>\n"
-                f"├ Threads: <code>{Config.THREAD_COUNT}</code>\n"
-                f"├ Timeout: <code>{Config.ATTACK_TIMEOUT}s</code>\n"
-                f"└ Auto-Method: <code>ENABLED</code>\n\n"
-                "<b>Method Mapping:</b>\n"
-                "• Ports 80, 443, 8080 → HTTP\n"
-                "• Ports 21, 22, 25, 53 → TCP\n"
-                "• Others → UDP\n\n"
-                "<i>Edit .env file to change</i>"
-            )
-            
-            await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
-        
-        
-        @self.bot.on_callback_query(filters.regex("^(cancel|back_menu)$"))
-        async def cancel_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            states.pop(callback.from_user.id, None)
-            status_messages.pop(callback.from_user.id, None)
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Start Test", callback_data="start_test")],
-                [InlineKeyboardButton("📊 Status", callback_data="show_status"),
-                 InlineKeyboardButton("🛑 Stop", callback_data="stop_test")],
-                [InlineKeyboardButton("⚙️ Settings", callback_data="show_settings")]
-            ])
-            
-            text = (
-                "╔════════════════════════╗\n"
-                "║   🤖 <b>CONTROL PANEL</b>   ║\n"
-                "╚════════════════════════╝\n\n"
-                "<b>System:</b> <code>ONLINE</code> ✅\n"
-                "<b>Platform:</b> <code>Termux</code> 📱\n"
-                f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            
-            await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
-        
-        
-        @self.bot.on_callback_query(filters.regex("^confirm_attack_(.+)$"))
-        async def confirm_attack_cb(client, callback: CallbackQuery):
-            if callback.from_user.id != self.admin_id:
-                return
-            
-            try:
-                data = callback.data.replace("confirm_attack_", "").split("_")
-                ip, port = data[0], int(data[1])
-                method = data[2] if len(data) > 2 else "auto"
-                
-                await callback.edit_message_text(
-                    f"⏳ <b>Starting Test...</b>\n"
-                    f"Target: <code>{ip}:{port}</code>\n"
-                    f"Method: <code>{method.upper()}</code>",
-                    parse_mode=HTML
-                )
-                
-                success = self.engine.start_attack(ip, port, method)
-                
-                if success:
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🛑 Stop Test", callback_data="stop_test")],
-                        [InlineKeyboardButton("🔙 Menu", callback_data="back_menu")]
-                    ])
-                    
-                    text = (
-                        "🚀 <b>TEST STARTED!</b>\n\n"
-                        f"<b>Target:</b> <code>{ip}:{port}</code>\n"
-                        f"<b>Method:</b> <code>{method.upper()}</code>\n\n"
-                        "⏳ <b>Initializing...</b>\n\n"
-                        "<i>Live updates starting...</i>"
-                    )
-                    
-                    msg = await callback.edit_message_text(text, reply_markup=keyboard, parse_mode=HTML)
-                    
-                    status_messages[callback.from_user.id] = msg
-                    asyncio.create_task(self._live_status_updater(callback.from_user.id, msg))
-                    
-                else:
-                    await callback.edit_message_text(
-                        "❌ <b>Failed!</b>\nTest already running?",
-                        parse_mode=HTML
-                    )
-                    
-            except Exception as e:
-                self.logger.error(f"Attack error: {e}")
-                await callback.edit_message_text(f"❌ Error: {str(e)[:100]}", parse_mode=HTML)
-        
-        
-        @self.bot.on_message(filters.text & filters.private)
-        async def handle_input(client, message):
-            if message.from_user.id != self.admin_id:
-                return
-            
-            user_id = message.from_user.id
-            text = message.text.strip()
-            
-            if user_id in states and states[user_id].get('step') == 'waiting_ip':
-                # Parse input
-                parts = text.split(':')
-                
-                if len(parts) < 2:
-                    await message.reply_text(
-                        "❌ <b>Invalid Format!</b>\n\n"
-                        "Use: <code>IP:PORT</code> or <code>IP:PORT:METHOD</code>\n"
-                        "Ex: <code>192.168.1.1:80</code>",
-                        parse_mode=HTML
-                    )
-                    return
-                
-                try:
-                    port = int(parts[1])
-                    ip = parts[0]
-                    method = parts[2].lower() if len(parts) > 2 else 'auto'
-                except (ValueError, IndexError):
-                    await message.reply_text("❌ Invalid format", parse_mode=HTML)
-                    return
-                
-                if not is_valid_ip(ip):
-                    await message.reply_text("❌ Invalid IP address", parse_mode=HTML)
-                    return
-                
-                states[user_id] = {
-                    'step': 'confirm',
-                    'ip': ip,
-                    'port': port,
-                    'method': method
-                }
-                
-                # Detect method for display
-                detected = method
-                if method == 'auto':
-                    if port in [80, 443, 8080, 8443]:
-                        detected = 'http'
-                    elif port in [21, 22, 23, 25, 53, 110, 143]:
-                        detected = 'tcp'
-                    else:
-                        detected = 'udp'
-                
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("🚀 START", callback_data=f"confirm_attack_{ip}_{port}_{method}"),
-                        InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-                    ]
-                ])
-                
-                await message.reply_text(
-                    f"🎯 <b>Confirm Target</b>\n\n"
-                    f"<b>IP:</b> <code>{ip}</code>\n"
-                    f"<b>Port:</b> <code>{port}</code>\n"
-                    f"<b>Method:</b> <code>{detected.upper()}</code>\n"
-                    f"<b>Threads:</b> <code>{Config.THREAD_COUNT}</code>\n\n"
-                    f"Click <b>🚀 START</b> to begin:",
-                    reply_markup=keyboard,
-                    parse_mode=HTML
-                )
-    
-    
-    async def _live_status_updater(self, user_id: int, message):
-        """Background task for live status updates"""
+        self.max_duration = max_duration
+        self.ctx = SessionContext()
+
+        self.bot.add_handler(MessageHandler(self.on_scan, filters.command("scan") & filters.user(admin_id)))
+        self.bot.add_handler(MessageHandler(self.on_stop, filters.command("stop") & filters.user(admin_id)))
+        self.bot.add_handler(CallbackQueryHandler(self.on_callback, filters.user(admin_id)))
+
+    async def on_scan(self, client: Client, message):
+        self.ctx.state = BotState.SCANNING
+        status = await message.reply("🔎 Scanning top dialogs for active voice chats...")
         try:
-            update_count = 0
-            while self.engine.stats.is_running and user_id in status_messages:
-                await asyncio.sleep(3)
-                
-                if not self.engine.stats.is_running:
-                    break
-                
-                if status_messages.get(user_id) != message:
-                    break
-                
-                stats = self.engine.get_status()
-                progress = min(100, (stats['progress'] / max(stats['max'], 1)) * 100)
-                bar = "█" * int(progress / 10) + "░" * (10 - int(progress / 10))
-                
-                method_emoji = {
-                    'UDP': '🔥',
-                    'TCP': '⚡',
-                    'HTTP': '🌐'
-                }.get(stats['method'], '⚡')
-                
-                anim_frames = ["⚡", "🔥", "💥", "⚡"]
-                anim = anim_frames[update_count % len(anim_frames)]
-                
-                text = (
-                    f"{anim} <b>LIVE ATTACK STATUS</b> {anim}\n\n"
-                    f"<b>Target:</b> <code>{stats['target']}:{stats['port']}</code>\n"
-                    f"<b>Method:</b> <code>{stats['method']}</code> {method_emoji}\n"
-                    f"<b>Progress:</b> <code>[{bar}] {progress:.1f}%</code>\n"
-                    f"<b>Requests:</b> <code>{format_number(stats['progress'])}/{format_number(stats['max'])}</code>\n"
-                    f"<b>Success:</b> <code>{format_number(stats['successful'])}</code> ✅\n"
-                    f"<b>Failed:</b> <code>{format_number(stats['failed'])}</code> ❌\n"
-                    f"<b>RPS:</b> <code>{stats['rps']:.2f}</code> req/s\n"
-                    f"<b>Duration:</b> <code>{stats['duration']:.1f}s</code>\n"
-                    f"<b>Threads:</b> <code>{stats['threads_active']}/{Config.THREAD_COUNT}</code>\n\n"
-                    f"<i>Updating... ({update_count})</i>"
+            records = await self.detector.scan_active_voice_chats(limit=50)
+        except FloodWait as wait_err:
+            await status.edit_text(f"⚠️ FloodWait: retry after {wait_err.value} seconds.")
+            self.ctx.state = BotState.IDLE
+            return
+
+        self.ctx.active_records = records
+        if not records:
+            await status.edit_text("No active voice chats found.")
+            self.ctx.state = BotState.IDLE
+            return
+
+        buttons = [[InlineKeyboardButton(f"{idx + 1}. {item.title[:40]}", callback_data=f"select:{idx}")] for idx, item in enumerate(records)]
+        await status.edit_text("Select a group with active VC:", reply_markup=InlineKeyboardMarkup(buttons))
+        self.ctx.state = BotState.SELECTION
+
+    async def on_stop(self, client: Client, message):
+        self.engine.stop()
+        if self.ctx.progress_task:
+            self.ctx.progress_task.cancel()
+            self.ctx.progress_task = None
+        self.ctx.state = BotState.IDLE
+        await message.reply("🛑 Global stop requested. All tasks halted.")
+
+    async def on_callback(self, client: Client, callback_query):
+        data = callback_query.data or ""
+        if data.startswith("select:"):
+            index = int(data.split(":", 1)[1])
+            self.ctx.selected_record = self.ctx.active_records[index]
+            await callback_query.message.edit_text(
+                f"Join VC and extract metadata for '{self.ctx.selected_record.title}'?",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("✅ PROCEED", callback_data="join:yes"), InlineKeyboardButton("❌ CANCEL", callback_data="join:no")]]
+                ),
+            )
+            await callback_query.answer()
+            return
+
+        if data == "join:no":
+            self.ctx.state = BotState.IDLE
+            await callback_query.message.edit_text("Cancelled.")
+            await callback_query.answer()
+            return
+
+        if data == "join:yes" and self.ctx.selected_record:
+            self.ctx.state = BotState.JOINING
+            try:
+                metadata = await self.detector.join_and_extract_metadata(self.ctx.selected_record)
+                self.ctx.extracted_metadata = metadata
+                self.ctx.state = BotState.READY
+                await callback_query.message.edit_text(
+                    "Metadata extracted.\n"
+                    "For safety, diagnostics can run only against private/loopback IP targets.\n"
+                    "Use: /diag <ip> <port> <duration>",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Leave VC", callback_data="leave")]]),
                 )
-                
-                try:
-                    await message.edit_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🛑 STOP NOW", callback_data="stop_test")],
-                            [InlineKeyboardButton("🔙 Hide (keep running)", callback_data="back_menu")]
-                        ]),
-                        parse_mode=HTML
-                    )
-                    update_count += 1
-                except Exception as e:
-                    if "MESSAGE_NOT_MODIFIED" not in str(e):
-                        self.logger.debug(f"Status update error: {e}")
-                    break
-            
-            # Attack finished
-            if user_id in status_messages:
-                stats = self.engine.get_status()
-                
-                text = (
-                    "✅ <b>ATTACK COMPLETED!</b>\n\n"
-                    f"<b>Target:</b> <code>{stats['target']}:{stats['port']}</code>\n"
-                    f"<b>Method:</b> <code>{stats['method']}</code>\n"
-                    f"<b>Total Requests:</b> <code>{format_number(stats['progress'])}</code>\n"
-                    f"<b>Successful:</b> <code>{format_number(stats['successful'])}</code> ✅\n"
-                    f"<b>Failed:</b> <code>{format_number(stats['failed'])}</code> ❌\n"
-                    f"<b>Duration:</b> <code>{stats['duration']:.2f}s</code>\n"
-                    f"<b>Avg RPS:</b> <code>{stats['rps']:.2f}</code>\n\n"
-                    "<b>Status:</b> <code>FINISHED</code> ✅"
+            except Exception as exc:
+                self.ctx.state = BotState.IDLE
+                await callback_query.message.edit_text(f"Join failed: {exc}")
+            await callback_query.answer()
+            return
+
+        if data == "global_stop":
+            self.engine.stop()
+            self.ctx.state = BotState.READY
+            await callback_query.answer("Stop signal sent")
+            return
+
+        if data == "leave" and self.ctx.selected_record:
+            await self.detector.leave_call(self.ctx.selected_record)
+            self.ctx.state = BotState.IDLE
+            await callback_query.message.edit_text("Left VC and returned to idle state.")
+            await callback_query.answer()
+
+    def register_diag_command(self):
+        self.bot.add_handler(MessageHandler(self.on_diag, filters.command("diag") & filters.user(self.admin_id)))
+
+    async def on_diag(self, client: Client, message):
+        args = message.text.split()
+        if len(args) != 4:
+            await message.reply("Usage: /diag <ip> <port> <duration_seconds>")
+            return
+
+        ip = args[1]
+        port = int(args[2])
+        duration = min(int(args[3]), self.max_duration)
+        if not is_valid_port(port):
+            await message.reply("Invalid port.")
+            return
+
+        self.ctx.state = BotState.ATTACKING
+        dashboard = await message.reply("Starting diagnostics...")
+        self.ctx.progress_task = asyncio.create_task(self._progress_loop(dashboard.chat.id, dashboard.id))
+
+        try:
+            await self.engine.run_udp_test(ip=ip, port=port, duration=duration)
+        except Exception as exc:
+            await dashboard.edit_text(f"Diagnostics failed: {exc}")
+        finally:
+            if self.ctx.progress_task:
+                self.ctx.progress_task.cancel()
+                self.ctx.progress_task = None
+            stats = self.engine.stats
+            await dashboard.edit_text(
+                "Diagnostics completed.\n"
+                f"Sent={stats.sent_packets} Failed={stats.failed_packets}\n"
+                f"Data={human_bytes(stats.bytes_sent)} RPS={stats.rps:.2f}"
+            )
+            self.ctx.state = BotState.READY
+
+    async def _progress_loop(self, chat_id: int, message_id: int):
+        while True:
+            await asyncio.sleep(5)
+            stats = self.engine.stats
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=(
+                        "📊 Live Progress\n"
+                        f"Data Sent: {human_bytes(stats.bytes_sent)}\n"
+                        f"Packets: {stats.sent_packets} success / {stats.failed_packets} failed\n"
+                        f"RPS: {stats.rps:.2f}"
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Global Stop", callback_data="global_stop")]]),
                 )
-                
-                try:
-                    await message.edit_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
-                        ]),
-                        parse_mode=HTML
-                    )
-                except:
-                    pass
-                
-                status_messages.pop(user_id, None)
-                
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.error(f"Live updater error: {e}")
+            except Exception:
+                pass
