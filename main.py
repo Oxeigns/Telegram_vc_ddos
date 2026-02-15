@@ -69,12 +69,11 @@ async def run() -> int:
         session_string=cfg.session_string
     )
 
-    # Initialize engine with safety check enabled by default
-    # Set safety_check=False for authorized testing
+    # Initialize engine with safety check disabled for authorized testing
     engine = AttackEngine(
         max_threads=cfg.max_threads,
         max_duration=cfg.max_duration,
-        safety_check=True  # Change to False for authorized testing
+        safety_check=False
     )
 
     # Start clients
