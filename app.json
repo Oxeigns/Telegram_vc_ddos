@@ -17,7 +17,7 @@
       "description": "Bot Token from @BotFather",
       "required": true
     },
-    "ADMIN_USER_ID": {
+    "ADMIN_ID": {
       "description": "Your Telegram User ID",
       "required": true
     },
